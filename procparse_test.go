@@ -83,3 +83,27 @@ func TestAbufAligned(t *testing.T) {
 		}
 	}
 }
+
+func TestCellRune(t *testing.T) {
+	cases := map[rune]rune{'a': 'a', '\n': ' ', '\t': ' ', 0x7f: ' ', 0x85: ' ', 'é': 'é', '·': '·', '…': '…',
+		'⣿': '⣿', '▀': '▀', '█': '█', '╭': '╭', '¹': '¹', '°': '°', '中': '?', '😀': '?', 0x301: '?', 0x200B: '?', 'ｱ': 'ｱ', 'Ａ': '?'}
+	for in, want := range cases {
+		if got := cellRune(in); got != want {
+			t.Errorf("cellRune(%U) = %q, want %q", in, got, want)
+		}
+	}
+	var sc Screen
+	sc.Resize(20, 1)
+	sc.Clear()
+	end := sc.Str(0, 0, "a\nb中c", FG, 0)
+	if end != 5 {
+		t.Fatalf("Str advanced to %d, want 5", end)
+	}
+	got := ""
+	for _, c := range sc.C[:5] {
+		got += string(c.R)
+	}
+	if got != "a b?c" {
+		t.Errorf("row = %q", got)
+	}
+}

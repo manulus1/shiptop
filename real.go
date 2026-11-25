@@ -56,8 +56,8 @@ type State struct {
 	Chg       bool
 	Sort      string
 	Rev       bool
-	Sel       int
-	Si        int
+	Sel       int  // selected pid, 0 = nothing selected
+	Follow    bool // scroll to the selection on the next frame (set only by user navigation)
 	Scroll    int
 	Flt       string
 	Filtering bool
@@ -274,24 +274,41 @@ var sortKeys = []string{"pid", "name", "thr", "user", "mem", "cpu"}
 
 func cur() *Proc { return S.Procs[S.Sel] }
 
+// move changes the selection; only user navigation makes the list scroll to it.
 func move(d int) {
 	a := list()
 	if len(a) == 0 {
 		return
 	}
-	i := 0
+	i := -1
 	for k, p := range a {
 		if p.Pid == S.Sel {
 			i = k
 		}
 	}
+	if i < 0 { // nothing selected yet: the first key press selects the top visible row
+		i = clampi(S.Scroll, 0, len(a)-1)
+		switch {
+		case d > 0:
+			d--
+		case d < 0:
+			d++
+		}
+	}
 	S.Sel = a[clampi(i+d, 0, len(a)-1)].Pid
+	S.Follow = true
+}
+
+// deselect drops the selection and goes back to the top of the list.
+func deselect() {
+	S.Sel, S.Scroll, S.Confirm, S.Follow = 0, 0, 0, false
 }
 
 // askKill puts the selected process up for confirmation (nothing happens without "y").
 func askKill() {
 	p := cur()
 	if p == nil {
+		say(DIM, "select a process first (↑ ↓)", true)
 		return
 	}
 	if why := protectedReason(p); why != "" {

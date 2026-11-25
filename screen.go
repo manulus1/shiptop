@@ -4,6 +4,7 @@ import (
 	"io"
 	"math"
 	"strconv"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -83,19 +84,56 @@ func (s *Screen) Clear() {
 	}
 }
 
+// cellRune makes sure every cell holds exactly one single-width, printable character:
+// control characters (e.g. newlines in a command line) would move the cursor, and wide or
+// combining characters would shift the rest of the row.
+func cellRune(r rune) rune {
+	if r >= 0x20 && r < 0x7f {
+		return r
+	}
+	switch {
+	case r < 0x20 || (r >= 0x7f && r < 0xa0) || r == utf8.RuneError:
+		return ' '
+	case unicode.In(r, unicode.Mn, unicode.Me, unicode.Cf):
+		return '?'
+	case isWide(r):
+		return '?'
+	}
+	return r
+}
+
+var wideRanges = [][2]rune{
+	{0x1100, 0x115F}, {0x2E80, 0x303E}, {0x3041, 0x33FF}, {0x3400, 0x4DBF}, {0x4E00, 0x9FFF},
+	{0xA000, 0xA4CF}, {0xAC00, 0xD7A3}, {0xF900, 0xFAFF}, {0xFE10, 0xFE19}, {0xFE30, 0xFE6F},
+	{0xFF00, 0xFF60}, {0xFFE0, 0xFFE6}, {0x1F300, 0x1F64F}, {0x1F900, 0x1F9FF}, {0x1FA70, 0x1FAFF},
+	{0x20000, 0x2FFFD}, {0x30000, 0x3FFFD},
+}
+
+func isWide(r rune) bool {
+	if r < 0x1100 {
+		return false
+	}
+	for _, w := range wideRanges {
+		if r >= w[0] && r <= w[1] {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Screen) Put(x, y int, r rune, fg uint32) {
 	if x < 0 || y < 0 || x >= s.W || y >= s.H {
 		return
 	}
 	c := &s.C[y*s.W+x]
-	c.R, c.FG, c.B = r, fg, false
+	c.R, c.FG, c.B = cellRune(r), fg, false
 }
 
 func (s *Screen) PutX(x, y int, r rune, fg, bg uint32, bold bool) {
 	if x < 0 || y < 0 || x >= s.W || y >= s.H {
 		return
 	}
-	s.C[y*s.W+x] = Cell{r, fg, bg, bold}
+	s.C[y*s.W+x] = Cell{cellRune(r), fg, bg, bold}
 }
 
 func (s *Screen) SetBG(x, y, w int, bg uint32) {
@@ -127,7 +165,7 @@ func (s *Screen) Bold(x, y int, str string, fg uint32, max int) int {
 		}
 		if x+n >= 0 && x+n < s.W && y >= 0 && y < s.H {
 			c := &s.C[y*s.W+x+n]
-			c.R, c.FG, c.B = r, fg, true
+			c.R, c.FG, c.B = cellRune(r), fg, true
 		}
 		n++
 	}

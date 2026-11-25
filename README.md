@@ -55,10 +55,11 @@ Just want to look? There is a [browser demo](https://manulus1.github.io/shiptop/
 
 | key | action |
 |---|---|
-| `↑` `↓` `PgUp` `PgDn` `Home` `End` | select process |
+| `↑` `↓` `PgUp` `PgDn` `Home` `End` | select a process (nothing is selected at start, so the busiest processes stay on screen) |
+| `Esc` | deselect and jump back to the top; press again to clear the filter |
 | `←` `→` | change sort column · `r` reverse |
 | `k` / `Del` | terminate the selected process: asks `y/n`, only `y` ends it |
-| `f` | filter by name, pid, path or user (`Enter`/`Esc` to finish, `Esc` again clears) |
+| `f` | filter by name, pid, path or user (`Enter`/`Esc` to finish) |
 | `p` / `Space` | pause · `+` `-` update interval (250 ms to 5 s) |
 | `b` `n` | previous / next network adapter |
 | `t` | thermal / visible light on the notebook |

@@ -13,7 +13,7 @@ import (
 	"unicode/utf8"
 )
 
-const version = "5.0.0"
+const version = "5.0.1"
 
 func main() {
 	for _, a := range os.Args[1:] {
@@ -178,7 +178,7 @@ usage: shiptop.exe           run inside Windows Terminal / PowerShell (bigger wi
 keys
   ↑ ↓ PgUp PgDn  select process     ← →  sort column      r  reverse sort
   k / Del        terminate the selected process (asks y/n first)
-  f              filter (Enter/Esc to finish)            Esc  clear filter
+  f              filter (Enter/Esc to finish)            Esc  deselect, then clear filter
   p / Space      pause                                   + -  slower / faster updates
   b n            previous / next network adapter
   t              thermal / visible light on the notebook model
@@ -290,9 +290,12 @@ func handleKey(k string) bool {
 	case "q", "Q":
 		return true
 	case "esc":
-		if V.Zoom {
+		switch {
+		case V.Zoom:
 			V.Zoom = false
-		} else {
+		case S.Sel != 0:
+			deselect()
+		default:
 			S.Flt = ""
 		}
 	case "up":
@@ -777,12 +780,8 @@ func drawProc(sc *Screen, x, y, w, h int) {
 			idx = i
 		}
 	}
-	if idx < 0 && len(a) > 0 {
-		idx = mini(S.Si, len(a)-1)
-		S.Sel = a[idx].Pid
-	}
-	if idx >= 0 {
-		S.Si = idx
+	if S.Sel != 0 && S.Procs[S.Sel] == nil { // the selected process has exited
+		S.Sel, S.Confirm = 0, 0
 	}
 	cx := sc.LabelR(x+w-2, y+h-1, false, col, Seg{fmt.Sprintf("%d/%d", len(a), len(S.Procs)), TITLE, false})
 	keys := "↑↓ select  ←→ sort  k terminate  f filter  p pause  t thermal  z zoom  q quit"
@@ -855,7 +854,20 @@ func drawProc(sc *Screen, x, y, w, h int) {
 			sc.Graph(gx, iy+1, gwid, dh-2, p.H, math.Max(5, maxOf(p.H, len(p.H)))*1.1, gHeat, false)
 		}
 	} else {
-		sc.Str(ix+2, iy+1, "no process selected", DIM, 0)
+		sc.Str(ix+2, iy+1, "nothing selected · ↑ ↓ to select a process · Esc deselects", DIM, iw-4)
+		var top *Proc
+		for _, p := range S.Procs {
+			if top == nil || p.CPU > top.CPU {
+				top = p
+			}
+		}
+		if top != nil && dh == 5 {
+			x2 := sc.Str(ix+2, iy+2, "busiest now: ", DIM, 0)
+			sc.Str(x2, iy+2, fmt.Sprintf("%s · %.1f%% cpu · %s", top.Name, top.CPU, fBytes(float64(top.Mem))), FG, iw-4-(x2-ix-2))
+		}
+		if S.DMsg != "" {
+			sc.Str(ix+2, iy+dh-2, trunc("» "+S.DMsg, iw-4), S.DMsgC, 0)
+		}
 	}
 
 	inner := iw - 2
@@ -923,13 +935,23 @@ func drawProc(sc *Screen, x, y, w, h int) {
 		sc.Str(cx0, hy+1, msg, DIM, inner)
 		return
 	}
-	if idx < S.Scroll {
-		S.Scroll = idx
+	if S.Follow && idx >= 0 { // only after the user moved the selection
+		if idx < S.Scroll {
+			S.Scroll = idx
+		}
+		if idx >= S.Scroll+nrows {
+			S.Scroll = idx - nrows + 1
+		}
 	}
-	if idx >= S.Scroll+nrows {
-		S.Scroll = idx - nrows + 1
-	}
+	S.Follow = false
 	S.Scroll = clampi(S.Scroll, 0, maxi(0, len(a)-nrows))
+	if idx >= 0 && (idx < S.Scroll || idx >= S.Scroll+nrows) {
+		arrow, where := "▼ ", "selection is below · ↑↓ jumps to it"
+		if idx < S.Scroll {
+			arrow, where = "▲ ", "selection is above · ↑↓ jumps to it"
+		}
+		sc.LabelR(ix+iw-2, iy+dh-1, false, dcol, Seg{arrow, HI, false}, Seg{trunc(where, iw/2), DIM, false})
+	}
 	for r := 0; r < nrows && S.Scroll+r < len(a); r++ {
 		p := a[S.Scroll+r]
 		wantDetail(p)
