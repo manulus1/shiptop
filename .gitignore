@@ -1,0 +1,5 @@
+/shiptop
+/shiptop.exe
+/shiptop-*
+/dist/
+*.test

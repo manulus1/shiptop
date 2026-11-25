@@ -1,0 +1,62 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: windows · live selftest
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go build -o shiptop.exe .
+      - name: read real system data and verify it
+        run: .\shiptop.exe --selftest
+
+  linux:
+    name: linux · live selftest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go build -o shiptop .
+      - run: ./shiptop --selftest
+
+  layouts:
+    name: windows struct layouts vs SDK headers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+      - run: |
+          for f in tools/wincheck/*.c; do
+            x86_64-w64-mingw32-gcc -std=c11 -c "$f" -o /dev/null
+          done
+          echo "all layout asserts hold"
+
+  cross:
+    name: cross-compile release targets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - run: |
+          for t in windows/amd64 windows/arm64 linux/amd64 linux/arm64; do
+            GOOS=${t%/*} GOARCH=${t#*/} CGO_ENABLED=0 go vet ./...
+            GOOS=${t%/*} GOARCH=${t#*/} CGO_ENABLED=0 go build -o /dev/null .
+          done
