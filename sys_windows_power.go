@@ -143,12 +143,18 @@ var gpuNameDone bool
 // adapter names from the display class key, skipping Microsoft's virtual adapters
 func readGPUName() string {
 	const cls = `SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\`
-	var names []string
+	var names, virtual []string
 	for _, sub := range []string{"0000", "0001", "0002", "0003"} {
-		n := regString(cls+sub, "DriverDesc")
-		if n != "" && !strings.HasPrefix(n, "Microsoft ") {
+		switch n := regString(cls+sub, "DriverDesc"); {
+		case n == "":
+		case strings.HasPrefix(n, "Microsoft "):
+			virtual = append(virtual, n)
+		default:
 			names = append(names, n)
 		}
+	}
+	if len(names) == 0 { // only Microsoft's basic/remote adapters, e.g. in a VM
+		names = virtual
 	}
 	return strings.Join(names, " + ")
 }
