@@ -13,7 +13,7 @@ import (
 	"unicode/utf8"
 )
 
-const version = "5.1.0"
+const version = "5.2.0"
 
 func main() {
 	for _, a := range os.Args[1:] {
@@ -89,6 +89,7 @@ func main() {
 			dt := math.Min(.1, now.Sub(last).Seconds())
 			last = now
 			nbFrame(dt)
+			matrixFrame(dt)
 			w, h := termSize()
 			if w != sc.W || h != sc.H {
 				sc.Resize(w, h)
@@ -230,10 +231,11 @@ keys
   b n            previous / next network adapter
   t              thermal / visible light on the notebook model
   z              zoom the notebook (arrows rotate while zoomed)
+  m              matrix mode: digital rain driven by live load (m / Esc back)
   q              quit
 
-All numbers are read live from the system. The notebook temperatures are modelled from the
-real CPU load (marked ~), because a console app can't read thermal sensors.
+All numbers are read live from the system. Temperatures come from the ACPI thermal zone where
+the laptop exposes one; otherwise they are modelled from the real load and marked ~.
 `
 
 func readKeys(ch chan<- string) {
@@ -332,6 +334,15 @@ func handleKey(k string) bool {
 		}
 		return false
 	}
+	if V.Matrix { // matrix mode: m or Esc goes back, q quits, everything else is ignored
+		switch k {
+		case "m", "M", "esc":
+			V.Matrix = false
+		case "q", "Q":
+			return true
+		}
+		return false
+	}
 	hold := func() { V.Hold = time.Now().Add(3 * time.Second) }
 	switch k {
 	case "q", "Q":
@@ -418,6 +429,9 @@ func handleKey(k string) bool {
 		flash("nb")
 	case "z", "5":
 		V.Zoom = !V.Zoom
+	case "m", "M":
+		V.Matrix = true
+		mx.w = 0 // start with an empty screen, the rain fills it
 	}
 	return false
 }
@@ -436,6 +450,10 @@ func draw(sc *Screen) {
 		m := fmt.Sprintf("shiptop needs at least 80×24 · this window is %d×%d", W, H)
 		sc.Str(maxi(0, (W-rlen(m))/2), H/2, m, WARN, W)
 		sc.Str(maxi(0, (W-22)/2), H/2+1, "make the window bigger", DIM, W)
+		return
+	}
+	if V.Matrix {
+		drawMatrix(sc)
 		return
 	}
 	drawHeader(sc)
@@ -889,7 +907,7 @@ func drawProc(sc *Screen, x, y, w, h int) {
 		S.Sel, S.Confirm = 0, 0
 	}
 	cx := sc.LabelR(x+w-2, y+h-1, false, col, Seg{fmt.Sprintf("%d/%d", len(a), len(S.Procs)), TITLE, false})
-	keys := "↑↓ select  ←→ sort  e energy  k terminate  f filter  p pause  t thermal  z zoom  q quit"
+	keys := "↑↓ select  ←→ sort  e energy  k terminate  f filter  p pause  t thermal  z zoom  m matrix  q quit"
 	if room := cx - (x + 2) - 3; room > 10 {
 		sc.Label(x+2, y+h-1, false, col, Seg{trunc(keys, room), DIM, false})
 	}

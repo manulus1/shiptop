@@ -64,6 +64,7 @@ var NB = NBState{Tc: 58, Tg: 50, Tv: 56, Ts: 42, Tb: 30, Gl: .4, Fan: 2400, Rt: 
 type View struct {
 	Yaw, Pitch, Lid float64
 	Therm, Zoom     bool
+	Matrix          bool // matrix mode (key m)
 	Hold            time.Time
 }
 

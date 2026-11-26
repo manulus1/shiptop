@@ -39,6 +39,12 @@ where your CPU is working.
 
 <p align="center"><img src="docs/notebook.gif" alt="rotating 3D thermal laptop" width="60%"></p>
 
+- **matrix mode** (`m`): digital rain made from your live data. It falls faster the busier the CPU is, each band
+  of columns belongs to one logical processor (a busy core rains harder), and the glyphs are taken from the
+  names of the processes running right now. A small panel shows cpu, ram, gpu, battery watts and the busiest process.
+
+<p align="center"><img src="docs/matrix.gif" alt="matrix mode: digital rain driven by live CPU load" width="60%"></p>
+
 ## Install
 
 **Windows 10 (1809+) or 11.** Windows Terminal recommended: the classic console may show boxes instead of braille dots.
@@ -69,6 +75,7 @@ Just want to look? There is a [browser demo](https://manulus1.github.io/shiptop/
 | `b` `n` | previous / next network adapter |
 | `t` | thermal / visible light on the notebook |
 | `z` | zoom the notebook (arrows rotate it) |
+| `m` | matrix mode: digital rain made from live data (`m` / `Esc` back) |
 | `q` | quit |
 
 `shiptop --once` prints a single plain-text sample, handy to compare with Task Manager.
@@ -104,7 +111,7 @@ lsass or svchost, as well as itself.
 
 ## How it works
 
-- Pure Go standard library, about 3,400 lines, no cgo and no third-party modules.
+- Pure Go standard library, about 4,500 lines, no cgo and no third-party modules.
 - Windows data comes from the same sources Task Manager uses: `NtQuerySystemInformation` for processes and
   per-core times, `GetPerformanceInfo`, `GlobalMemoryStatusEx`, `GetDiskFreeSpaceExW`, `GetIfEntry`.
 - The screen is a cell buffer flushed as 24-bit ANSI with diffing, so only changed cells are written.
