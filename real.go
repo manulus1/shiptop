@@ -16,8 +16,10 @@ type Proc struct {
 	Pid, PPid, Threads int
 	Name, Path, User   string
 	Mem                uint64
-	CPU                float64
-	H                  []float64
+	CPU                float64 // % of total CPU
+	GPU                float64 // % of the busiest GPU engine
+	Energy             float64 // % share of all CPU+GPU activity (estimate, see energyShares)
+	H, EH              []float64
 	start              int64
 	lastCPU            float64
 	asked, known       bool
@@ -54,6 +56,10 @@ type State struct {
 	Up        float64
 	Bat       int
 	Chg       bool
+	GPU       GPUStat
+	Power     PowerStat
+	Therm     ThermalStat
+	GPUH      []float64
 	Sort      string
 	Rev       bool
 	Sel       int  // selected pid, 0 = nothing selected
@@ -135,10 +141,19 @@ func update() {
 		S.Disks = readDisks()
 	}
 	updateNet(readNet(), dt)
-	updateProcs(dt)
-	if S.Tick%5 == 0 {
-		S.Bat, S.Chg = readBattery()
+	sampleSensors()
+	S.GPU = readGPU()
+	if S.GPU.OK {
+		S.GPUH = pushH(S.GPUH, S.GPU.Load*100, N)
 	}
+	updateProcs(dt)
+	energyShares()
+	S.Power = readPower()
+	S.Bat, S.Chg = -1, S.Power.Charging
+	if S.Power.HasBattery {
+		S.Bat = S.Power.Pct
+	}
+	S.Therm = readThermal()
 	S.Up = uptime()
 	nbStep()
 	S.Tick++
@@ -207,6 +222,10 @@ func updateProcs(dt float64) {
 		}
 		p.lastCPU = r.CPUTime
 		p.PPid, p.Threads, p.Name, p.Mem, p.CPU = r.PPid, r.Threads, r.Name, r.Mem, cpu
+		p.GPU = 0
+		if S.GPU.PerPid != nil {
+			p.GPU = S.GPU.PerPid[r.Pid] * 100
+		}
 		p.H = pushH(p.H, cpu, 120)
 		seen[r.Pid] = true
 		threads += r.Threads
@@ -219,6 +238,23 @@ func updateProcs(dt float64) {
 	S.Count = counts(len(raws), threads)
 }
 
+// energyShares estimates which processes cause the most work: each process' share of all
+// CPU% + GPU% right now. It is an activity share, not a measurement of watts per process
+// (Windows does not expose that without admin rights).
+func energyShares() {
+	tot := 0.0
+	for _, p := range S.Procs {
+		tot += p.CPU + p.GPU
+	}
+	for _, p := range S.Procs {
+		p.Energy = 0
+		if tot > 0 {
+			p.Energy = (p.CPU + p.GPU) / tot * 100
+		}
+		p.EH = pushH(p.EH, p.Energy, 120)
+	}
+}
+
 func list() []*Proc {
 	f := strings.ToLower(S.Flt)
 	a := make([]*Proc, 0, len(S.Procs))
@@ -227,7 +263,7 @@ func list() []*Proc {
 			a = append(a, p)
 		}
 	}
-	desc := S.Sort == "cpu" || S.Sort == "mem" || S.Sort == "thr"
+	desc := isDesc(S.Sort)
 	less := func(x, y *Proc) bool {
 		switch S.Sort {
 		case "pid":
@@ -250,6 +286,14 @@ func list() []*Proc {
 			if x.Mem != y.Mem {
 				return x.Mem < y.Mem
 			}
+		case "gpu":
+			if x.GPU != y.GPU {
+				return x.GPU < y.GPU
+			}
+		case "energy":
+			if x.Energy != y.Energy {
+				return x.Energy < y.Energy
+			}
 		default:
 			if x.CPU != y.CPU {
 				return x.CPU < y.CPU
@@ -270,7 +314,11 @@ func list() []*Proc {
 	return a
 }
 
-var sortKeys = []string{"pid", "name", "thr", "user", "mem", "cpu"}
+var sortKeys = []string{"pid", "name", "thr", "user", "mem", "gpu", "cpu", "energy"}
+
+func isDesc(k string) bool {
+	return k == "cpu" || k == "mem" || k == "thr" || k == "gpu" || k == "energy"
+}
 
 func cur() *Proc { return S.Procs[S.Sel] }
 

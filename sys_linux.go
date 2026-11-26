@@ -216,15 +216,6 @@ func readNet() []NetCounter {
 	return out
 }
 
-func readBattery() (int, bool) {
-	c := strings.TrimSpace(readFile("/sys/class/power_supply/BAT0/capacity"))
-	v, err := strconv.Atoi(c)
-	if err != nil {
-		return -1, false
-	}
-	return v, strings.HasPrefix(readFile("/sys/class/power_supply/BAT0/status"), "Charging")
-}
-
 func uptime() float64 {
 	f := strings.Fields(readFile("/proc/uptime"))
 	if len(f) == 0 {

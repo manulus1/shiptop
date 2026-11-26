@@ -13,7 +13,7 @@ import (
 	"unicode/utf8"
 )
 
-const version = "5.0.1"
+const version = "5.1.0"
 
 func main() {
 	for _, a := range os.Args[1:] {
@@ -123,9 +123,46 @@ func once(strict bool) {
 		fmt.Printf("net    %s · rx %s tx %s\n", n.Name, fRate(n.RxRate), fRate(n.TxRate))
 	}
 	fmt.Printf("procs  %d processes · %d threads · %d handles · %s\n", S.Count.Procs, S.Count.Threads, S.Count.Handles, fUptime(S.Up))
-	if S.Bat >= 0 {
-		fmt.Printf("bat    %d%% charging=%v\n", S.Bat, S.Chg)
+	if g := S.GPU; g.OK {
+		fmt.Printf("gpu    %s · load %.1f%% (busiest engine)\n", g.Name, g.Load*100)
+	} else {
+		name := g.Name
+		if name == "" {
+			name = "no GPU load counters"
+		}
+		fmt.Printf("gpu    %s · load n/a\n", name)
 	}
+	if S.Therm.OK {
+		fmt.Print("temp  ")
+		for _, z := range S.Therm.Zones {
+			fmt.Printf(" %s %.1f°C", z.Name, z.C)
+		}
+		fmt.Println(" (ACPI thermal zones, measured)")
+	} else {
+		fmt.Println("temp   no thermal zone exposed: notebook temperatures are modelled from load (~)")
+	}
+	if p := S.Power; p.HasBattery {
+		fmt.Printf("power  battery %d%% · ac=%v charging=%v", p.Pct, p.OnAC, p.Charging)
+		if p.RateOK {
+			fmt.Printf(" · rate %s", fWatts(p.RateW))
+		}
+		if p.Remaining >= 0 {
+			fmt.Printf(" · %s left", fDur(p.Remaining))
+		}
+		if p.FullWh > 0 {
+			fmt.Printf(" · %.1f/%.1f Wh, design %.1f Wh", p.CapWh, p.FullWh, p.DesignWh)
+		}
+		if p.Cycles > 0 {
+			fmt.Printf(" · %d cycles", p.Cycles)
+		}
+		if p.TempC > 0 {
+			fmt.Printf(" · %.1f°C", p.TempC)
+		}
+		fmt.Println()
+	} else {
+		fmt.Printf("power  no battery · ac=%v\n", p.OnAC)
+	}
+	fmt.Printf("sensor %s\n", sensorStatus())
 	fmt.Printf("source %s\n", procSource)
 	a := list()
 	for k := 0; k < len(a) && k < 8; k++ {
@@ -148,6 +185,15 @@ func once(strict bool) {
 	check(len(S.Disks) > 0, "disks: none found")
 	check(len(S.Procs) >= 10, fmt.Sprintf("procs: only %d processes", len(S.Procs)))
 	check(S.Up > 0, "uptime: zero")
+	check(strings.HasPrefix(sensorStatus(), wantSensors), "sensors: "+sensorStatus())
+	if S.GPU.OK {
+		check(S.GPU.Load >= 0 && S.GPU.Load <= 1, "gpu: load out of range")
+	}
+	sum := 0.0
+	for _, p := range S.Procs {
+		sum += p.Energy
+	}
+	check(sum == 0 || math.Abs(sum-100) < .5, fmt.Sprintf("energy shares add up to %.2f%%", sum))
 	check(procSource == wantProcSource, "procs read via "+procSource+", expected "+wantProcSource)
 	self := S.Procs[os.Getpid()]
 	check(self != nil, "procs: own process missing from the list")
@@ -179,6 +225,7 @@ keys
   ↑ ↓ PgUp PgDn  select process     ← →  sort column      r  reverse sort
   k / Del        terminate the selected process (asks y/n first)
   f              filter (Enter/Esc to finish)            Esc  deselect, then clear filter
+  e              energy view: who causes the most CPU+GPU activity (and drains the battery)
   p / Space      pause                                   + -  slower / faster updates
   b n            previous / next network adapter
   t              thermal / visible light on the notebook model
@@ -359,6 +406,13 @@ func handleKey(k string) bool {
 			S.IfacePick = true
 			flash("net")
 		}
+	case "e":
+		if S.Sort == "energy" {
+			S.Sort = "cpu"
+		} else {
+			S.Sort = "energy"
+		}
+		S.Rev = false
 	case "t":
 		V.Therm = !V.Therm
 		flash("nb")
@@ -534,7 +588,17 @@ func drawNB(sc *Screen, x, y, w, h int) {
 	if w >= 44 {
 		sc.LabelR(rx-1, y, true, col, Seg{"z ", HI, false}, Seg{zt, TITLE, false})
 	}
-	bx := sc.LabelR(x+w-2, y+h-1, false, col, Seg{"model ", DIM, false}, Seg{fmt.Sprintf("~%.1f°", NB.Max), TITLE, false})
+	pw := S.Power
+	var br []Seg
+	switch {
+	case pw.HasBattery && !pw.OnAC && pw.Remaining >= 0:
+		br = []Seg{{fDur(pw.Remaining), TITLE, false}, {" left", DIM, false}}
+	case S.Therm.OK:
+		br = []Seg{{"zone ", DIM, false}, {fmt.Sprintf("%.1f°", S.Therm.Max), TITLE, false}}
+	default:
+		br = []Seg{{"model ", DIM, false}, {fmt.Sprintf("~%.1f°", NB.Max), TITLE, false}}
+	}
+	bx := sc.LabelR(x+w-2, y+h-1, false, col, br...)
 	spec := fmt.Sprintf("%s · %d threads · %.0f GB", NB.CPUName, NB.N, NB.MemGB)
 	if room := bx - (x + 2) - 3; room > 8 {
 		sc.Label(x+2, y+h-1, false, col, Seg{trunc(spec, room), DIM, false})
@@ -543,6 +607,9 @@ func drawNB(sc *Screen, x, y, w, h int) {
 	rl := 2
 	if ih >= 12 {
 		rl = 3
+	}
+	if ih >= 14 && pw.HasBattery {
+		rl = 4
 	}
 	vh := ih - rl
 	if vh < 3 {
@@ -566,26 +633,41 @@ func drawNB(sc *Screen, x, y, w, h int) {
 	}
 	sc.Str(lx, iy+vh-1, fmt.Sprintf("%.0f°", spanLo), DIM, 0)
 
-	ram, bat := "n/a", "ac"
+	ram, bat, pwr, gpu := "n/a", "none", "n/a", "n/a"
 	if NB.Ram >= 0 {
 		ram = pctS(NB.Ram * 100)
 	}
-	if NB.Bat >= 0 {
-		bat = fmt.Sprintf("%d%%", NB.Bat)
-		if NB.Chg {
+	if pw.HasBattery {
+		bat = fmt.Sprintf("%d%%", pw.Pct)
+		if pw.Charging {
 			bat += "+"
 		}
+		pwr = "ac"
+		if pw.RateOK {
+			pwr = fWatts(pw.RateW)
+		}
+	}
+	if S.GPU.OK {
+		gpu = pctS(S.GPU.Load * 100)
+	}
+	tl, tv, tc := "cpu", fmt.Sprintf("~%.0f°C", NB.Tc), gHeat.At((NB.Tc-35)/60) // modelled
+	if S.Therm.OK {
+		tl, tv, tc = "zone", fmt.Sprintf("%.0f°C", S.Therm.Max), gHeat.At((S.Therm.Max-35)/60) // measured
+	}
+	pc := uint32(FG)
+	if pw.RateOK && pw.RateW < 0 {
+		pc = gHeat.At(-pw.RateW / 45)
 	}
 	items := []struct {
 		l, v string
 		c    uint32
 	}{
 		{"load", pctS(NB.Load * 100), gHeat.At(NB.Load)},
+		{"gpu", gpu, gHeat.At(S.GPU.Load)},
+		{"pwr", pwr, pc},
 		{"ram", ram, FG},
 		{"bat", bat, FG},
-		{"cpu", fmt.Sprintf("~%.0f°C", NB.Tc), gHeat.At((NB.Tc - 35) / 60)},
-		{"gpu", fmt.Sprintf("~%.0f°C", NB.Tg), gHeat.At((NB.Tg - 35) / 60)},
-		{"fan", fmt.Sprintf("~%.1fk", NB.Fan/1000), FG},
+		{tl, tv, tc},
 	}
 	cw := iw / 3
 	ry := iy + vh
@@ -594,7 +676,7 @@ func drawNB(sc *Screen, x, y, w, h int) {
 		sc.Str(cx, cy, it.l, DIM, 0)
 		sc.RStr(cx+cw-2, cy, it.v, it.c)
 	}
-	if rl == 3 {
+	if rl >= 3 {
 		ty := ry + 2
 		tx := sc.Str(ix+1, ty, "threads ", DIM, 0)
 		fit := ix + iw - 1 - tx
@@ -608,6 +690,25 @@ func drawNB(sc *Screen, x, y, w, h int) {
 		}
 		if shown < n {
 			sc.Str(tx+shown+1, ty, fmt.Sprintf("+%d", n-shown), DIM, 0)
+		}
+	}
+	if rl == 4 {
+		var parts []string
+		if pw.FullWh > 0 {
+			parts = append(parts, fmt.Sprintf("%.0f/%.0f Wh", pw.CapWh, pw.FullWh))
+		}
+		if pw.DesignWh > 0 && pw.FullWh > 0 {
+			parts = append(parts, fmt.Sprintf("health %d%%", int(math.Round(pw.FullWh/pw.DesignWh*100))))
+		}
+		if pw.Cycles > 0 {
+			parts = append(parts, fmt.Sprintf("%d cycles", pw.Cycles))
+		}
+		if pw.TempC > 0 {
+			parts = append(parts, fmt.Sprintf("%.0f°C", pw.TempC))
+		}
+		if len(parts) > 0 {
+			x2 := sc.Str(ix+1, ry+3, "battery ", DIM, 0)
+			sc.Str(x2, ry+3, strings.Join(parts, " · "), FG, ix+iw-1-x2)
 		}
 	}
 }
@@ -757,7 +858,11 @@ type pcol struct {
 func drawProc(sc *Screen, x, y, w, h int) {
 	col := boxCol(CPROC, "proc")
 	sc.Box(x, y, w, h, col)
-	sc.Label(x+2, y, true, col, Seg{"⁴", HI, false}, Seg{"proc", TITLE, true})
+	if S.Sort == "energy" {
+		sc.Label(x+2, y, true, col, Seg{"⁴", HI, false}, Seg{"proc", TITLE, true}, Seg{" · energy", WARN, true})
+	} else {
+		sc.Label(x+2, y, true, col, Seg{"⁴", HI, false}, Seg{"proc", TITLE, true})
+	}
 	revC := uint32(DIM)
 	if S.Rev {
 		revC = TITLE
@@ -784,7 +889,7 @@ func drawProc(sc *Screen, x, y, w, h int) {
 		S.Sel, S.Confirm = 0, 0
 	}
 	cx := sc.LabelR(x+w-2, y+h-1, false, col, Seg{fmt.Sprintf("%d/%d", len(a), len(S.Procs)), TITLE, false})
-	keys := "↑↓ select  ←→ sort  k terminate  f filter  p pause  t thermal  z zoom  q quit"
+	keys := "↑↓ select  ←→ sort  e energy  k terminate  f filter  p pause  t thermal  z zoom  q quit"
 	if room := cx - (x + 2) - 3; room > 10 {
 		sc.Label(x+2, y+h-1, false, col, Seg{trunc(keys, room), DIM, false})
 	}
@@ -816,7 +921,7 @@ func drawProc(sc *Screen, x, y, w, h int) {
 		if p.CPU >= .05 {
 			state = "active"
 		}
-		meta := fmt.Sprintf("%s · %s · thr %d · mem %s · ppid %d", state, user, p.Threads, fBytes(float64(p.Mem)), p.PPid)
+		meta := fmt.Sprintf("%s · %s · thr %d · mem %s · gpu %.1f%% · energy %.1f%% · ppid %d", state, user, p.Threads, fBytes(float64(p.Mem)), p.GPU, p.Energy, p.PPid)
 		path := p.Path
 		if path == "" {
 			if p.known {
@@ -861,7 +966,19 @@ func drawProc(sc *Screen, x, y, w, h int) {
 				top = p
 			}
 		}
-		if top != nil && dh == 5 {
+		if S.Sort == "energy" && dh == 5 {
+			ps := S.Power
+			line := "on AC power"
+			switch {
+			case !ps.HasBattery:
+				line = "no battery"
+			case ps.RateOK && ps.RateW < 0:
+				line = fmt.Sprintf("on battery %s · %s left", fWatts(ps.RateW), fDur(ps.Remaining))
+			case ps.RateOK && ps.RateW > 0:
+				line = fmt.Sprintf("charging %s", fWatts(ps.RateW))
+			}
+			sc.Str(ix+2, iy+2, line+" · energy = share of CPU+GPU activity (estimate)", FG, iw-4)
+		} else if top != nil && dh == 5 {
 			x2 := sc.Str(ix+2, iy+2, "busiest now: ", DIM, 0)
 			sc.Str(x2, iy+2, fmt.Sprintf("%s · %.1f%% cpu · %s", top.Name, top.CPU, fBytes(float64(top.Mem))), FG, iw-4-(x2-ix-2))
 		}
@@ -871,35 +988,46 @@ func drawProc(sc *Screen, x, y, w, h int) {
 	}
 
 	inner := iw - 2
-	cols := []pcol{{"pid", "Pid", 7, true}, {"name", "Program", 16, false}, {"path", "Path", 0, false}, {"thr", "Thr", 5, true}, {"user", "User", 10, false}, {"mem", "MemB", 6, true}, {"cpu", "Cpu%", 5, true}, {"spark", "", 5, false}}
-	fixed := 0
-	for _, c := range cols {
-		fixed += c.w
+	energy := S.Sort == "energy"
+	use := []pcol{{"pid", "Pid", 7, true}, {"name", "Program", 16, false}, {"thr", "Thr", 5, true}, {"user", "User", 10, false}, {"mem", "MemB", 6, true}}
+	if S.GPU.OK || S.Sort == "gpu" {
+		use = append(use, pcol{"gpu", "Gpu%", 5, true})
 	}
-	pathW := inner - fixed - (len(cols) - 1)
-	var use []pcol
-	for _, c := range cols {
-		switch {
-		case c.key == "path" && pathW < 12:
-			continue
-		case (c.key == "thr" || c.key == "spark") && inner < 56:
-			continue
-		case c.key == "path":
-			c.w = pathW
-		}
-		use = append(use, c)
+	use = append(use, pcol{"cpu", "Cpu%", 5, true})
+	if energy {
+		use = append(use, pcol{"energy", "Enrg%", 6, true})
 	}
-	if pathW < 12 {
-		fx := 0
-		for _, c := range use {
-			fx += c.w
+	use = append(use, pcol{"spark", "", 5, false})
+	width := func(cs []pcol) int {
+		n := len(cs) - 1
+		for _, c := range cs {
+			n += c.w
 		}
-		extra := inner - fx - (len(use) - 1)
-		for i := range use {
-			if use[i].key == "name" {
-				use[i].w += clampi(extra, 0, 14)
+		return n
+	}
+	without := func(cs []pcol, key string) []pcol {
+		var out []pcol
+		for _, c := range cs {
+			if c.key != key {
+				out = append(out, c)
 			}
 		}
+		return out
+	}
+	drop := []string{"thr", "spark", "user", "gpu"} // dropped in this order while the row does not fit
+	if energy {
+		drop = []string{"thr", "spark", "user", "mem"}
+	}
+	for _, k := range drop {
+		if width(use) <= inner {
+			break
+		}
+		use = without(use, k)
+	}
+	if pathW := inner - width(use) - 1; pathW >= 12 { // the path takes whatever is left
+		use = append(use[:2], append([]pcol{{"path", "Path", pathW, false}}, use[2:]...)...)
+	} else if extra := inner - width(use); extra > 0 {
+		use[1].w += mini(extra, 14)
 	}
 	hy := iy + dh
 	cx0 := ix + 1
@@ -909,7 +1037,7 @@ func drawProc(sc *Screen, x, y, w, h int) {
 		fg := uint32(TITLE)
 		if c.key == S.Sort {
 			fg = HI
-			desc := c.key == "cpu" || c.key == "mem" || c.key == "thr"
+			desc := isDesc(c.key)
 			if desc != S.Rev {
 				t += "▾"
 			} else {
@@ -991,8 +1119,24 @@ func drawProc(sc *Screen, x, y, w, h int) {
 				if p.CPU < .05 && !sel {
 					cf = DIM
 				}
+			case "gpu":
+				v = fmt.Sprintf("%.1f", p.GPU)
+				cf = gHeat.At(p.GPU / 40)
+				if p.GPU < .05 && !sel {
+					cf = DIM
+				}
+			case "energy":
+				v = fmt.Sprintf("%.1f", p.Energy)
+				cf = gHeat.At(p.Energy / 40)
+				if p.Energy < .05 && !sel {
+					cf = DIM
+				}
 			case "spark":
-				sc.Spark(px, ry, p.H, 5, math.Max(5, maxOf(p.H, 5)), 50, gHeat)
+				h := p.H
+				if energy {
+					h = p.EH
+				}
+				sc.Spark(px, ry, h, 5, math.Max(5, maxOf(h, 5)), 50, gHeat)
 				px += c.w + 1
 				continue
 			}

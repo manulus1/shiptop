@@ -145,16 +145,28 @@ func nbStep() {
 		}
 	}
 	NB.Ram, NB.Bat, NB.Chg = memUsedFrac(), S.Bat, S.Chg
-	NB.Tc += (40+52*NB.Load-NB.Tc)*.25 + (R()-.5)*.3
-	NB.Gl = clamp(.25+NB.Load*.5+NB.Rt/6, 0, 1)
-	NB.Tg += (36 + 34*NB.Gl - NB.Tg) * .15
+	if S.Therm.OK { // a real ACPI thermal zone beats the formula
+		NB.Tc += (S.Therm.Max - NB.Tc) * .5
+	} else {
+		NB.Tc += (40+52*NB.Load-NB.Tc)*.25 + (R()-.5)*.3
+	}
+	if S.GPU.OK { // real GPU load
+		NB.Gl = S.GPU.Load
+	} else {
+		NB.Gl = clamp(.25+NB.Load*.5+NB.Rt/6, 0, 1)
+	}
+	NB.Tg += (36 + 40*NB.Gl - NB.Tg) * .15
 	NB.Tv += (NB.Tc*.85 + 6 - NB.Tv) * .2
 	NB.Ts += (38 + 8*NB.Load + (R()-.5)*1 - NB.Ts) * .3
 	chg := 0.0
 	if NB.Chg {
 		chg = 4
 	}
-	NB.Tb += (29 + chg + NB.Load*3 - NB.Tb) * .05
+	if S.Power.TempC > 0 {
+		NB.Tb = S.Power.TempC
+	} else {
+		NB.Tb += (29 + chg + NB.Load*3 - NB.Tb) * .05
+	}
 	NB.Fan += (clamp(1300+(NB.Tc-45)*120, 1300, 6400) - NB.Fan) * .25
 	NB.Ph = float64(S.Tick) * .7
 	nbHeat()

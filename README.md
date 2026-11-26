@@ -29,9 +29,13 @@ where your CPU is working.
 - **mem**: used / available / cached, plus commit charge vs. commit limit
 - **disks**: every local drive with used %, free space and file system
 - **net**: live download / upload rates per adapter, peaks and totals since start (`b` / `n` switches adapter)
-- **proc**: all processes with CPU %, working set, threads, parent, user and path; sort, filter, terminate
+- **proc**: all processes with CPU %, GPU %, working set, threads, parent, user and path; sort, filter, terminate
+- **energy view** (`e`): which processes cause the most CPU + GPU activity, i.e. what drains your battery,
+  next to the real battery draw in watts and the time left
 - **notebook**: a pixel-art 3D laptop rendered right in the terminal with half-block characters, coloured
-  like a thermal camera by your **real** CPU load. Press `z` to zoom, arrows to rotate, `t` for visible light.
+  like a thermal camera by your **real** CPU and GPU load. Shows GPU load, battery draw in watts, time left,
+  battery health and cycle count, and real temperatures where your laptop exposes them.
+  Press `z` to zoom, arrows to rotate, `t` for visible light.
 
 <p align="center"><img src="docs/notebook.gif" alt="rotating 3D thermal laptop" width="60%"></p>
 
@@ -58,6 +62,7 @@ Just want to look? There is a [browser demo](https://manulus1.github.io/shiptop/
 | `↑` `↓` `PgUp` `PgDn` `Home` `End` | select a process (nothing is selected at start, so the busiest processes stay on screen) |
 | `Esc` | deselect and jump back to the top; press again to clear the filter |
 | `←` `→` | change sort column · `r` reverse |
+| `e` | energy view: sort by share of CPU + GPU activity, with the battery draw on top |
 | `k` / `Del` | terminate the selected process: asks `y/n`, only `y` ends it |
 | `f` | filter by name, pid, path or user (`Enter`/`Esc` to finish) |
 | `p` / `Space` | pause · `+` `-` update interval (250 ms to 5 s) |
@@ -70,10 +75,29 @@ Just want to look? There is a [browser demo](https://manulus1.github.io/shiptop/
 
 ## What is real and what is modelled
 
-Everything in the cpu, mem, disks, net and proc boxes is read live from the OS. Process CPU % is the share of
-total CPU time, like Task Manager. The notebook box shows real load, RAM, battery, CPU name and thread count.
-**Its temperatures and fan speed are modelled from the real load** and marked with `~`, because a console
-program cannot read thermal sensors on Windows without a kernel driver.
+Read live from Windows, no admin rights or extra drivers needed:
+
+- cpu, memory, disks, network and processes; process CPU % is the share of total CPU time, like Task Manager
+- **GPU load** overall and per process, from the same performance counters Task Manager uses
+  (busiest engine of the busiest adapter)
+- **battery**: charge or discharge rate in watts, time left, capacity, health (full vs. design capacity),
+  cycle count and battery temperature if the battery reports them, straight from the battery driver
+- **temperatures** from ACPI thermal zones, if your laptop exposes them (shown as `zone`). These are
+  motherboard or package sensors chosen by the laptop maker, not individual CPU cores.
+
+Estimated, and marked as such:
+
+- **energy %** in the energy view is each process' share of all current CPU % + GPU % activity. It shows who
+  keeps the machine busy, it is not a per-process wattage (Windows does not expose that to normal users).
+- **modelled temperatures** (marked `~`) are used only when no thermal zone is available. The model is simple:
+  CPU 40 °C at idle rising linearly to 92 °C at full load, GPU 36 °C plus 40 °C × GPU load, battery
+  29 °C plus up to 3 °C (4 °C more while charging). It is a plausible ballpark for a typical laptop and can
+  be 10 to 30 °C off for yours.
+- the **heat map** on the 3D laptop is always a model: real load and temperatures go in, but how heat spreads
+  across the chassis is drawn from typical laptop layouts.
+
+Per-core CPU temperatures on Intel and AMD need a kernel driver on Windows; shiptop deliberately does not
+install one.
 
 Terminating is guarded: shiptop always asks first, and refuses system processes such as System, csrss,
 lsass or svchost, as well as itself.
@@ -91,10 +115,13 @@ lsass or svchost, as well as itself.
 
 Windows APIs are easy to get subtly wrong, so:
 
-- every struct offset, size and constant the Windows code relies on is checked at compile time against the
-  Windows SDK headers in [`tools/wincheck`](tools/wincheck) (run in CI with mingw-w64),
-- the process-list parser is unit-tested against a buffer laid out like the real one, including Unicode names,
-  out-of-bounds pointers and truncated data,
+- every struct offset, size and constant the Windows code relies on (processes, memory, performance
+  counters, battery driver IOCTLs, console) is checked at compile time against the Windows SDK headers in
+  [`tools/wincheck`](tools/wincheck) (run in CI with mingw-w64),
+- DLLs that are not KnownDLLs (`pdh.dll`, `setupapi.dll`) are loaded by their full System32 path,
+- the parsers for the process list, performance counter arrays, GPU engine names and battery structs are
+  unit-tested against buffers laid out like the real ones, including Unicode names, out-of-bounds pointers
+  and truncated data; the Linux battery and thermal readers are tested against fake sysfs trees,
 - CI runs `shiptop --selftest` on a real **Windows** runner and on Linux: it reads every metric and fails if
   any is missing or implausible.
 
@@ -109,7 +136,6 @@ go test ./...
 ## Roadmap
 
 - 64-bit network counters and friendly adapter names (`GetIfTable2`)
-- real GPU load and laptop power draw in watts
 - disk read / write rates
 - process tree view, mouse support, saved settings and themes
 - winget and Scoop packages, signed binaries

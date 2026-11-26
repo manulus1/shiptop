@@ -392,18 +392,6 @@ func readNet() []NetCounter {
 	return out
 }
 
-func readBattery() (int, bool) {
-	b := abuf(12)
-	if r, _, _ := pGetSystemPowerStatus.Call(ptr(b)); r == 0 {
-		return -1, false
-	}
-	ac, flag, pct := b[0], b[1], b[2]
-	if flag == 128 || flag == 255 || pct > 100 { // no battery / unknown
-		return -1, false
-	}
-	return int(pct), ac == 1
-}
-
 func uptime() float64 {
 	r, _, _ := pGetTickCount64.Call()
 	return float64(r) / 1000
