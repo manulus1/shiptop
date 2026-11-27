@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const version = "5.3.0"
+const version = "5.4.0"
 
 func main() {
 	args := os.Args[1:]
