@@ -106,7 +106,10 @@ func raiseSelected() {
 	}
 	w := WS.List[i]
 	WS.Raising = true
-	go func() { raiseResC <- raiseRes{w.H, w.Title, raiseWindow(w.H)} }()
+	go func() {
+		_, err := raiseWindow(w.H)
+		raiseResC <- raiseRes{w.H, w.Title, err}
+	}()
 }
 
 func applyRaise(r raiseRes) {
@@ -300,11 +303,12 @@ func raiseByTitle(text string) int {
 	}
 	for _, w := range l {
 		if containsFold(w.Title, text) {
-			if err := raiseWindow(w.H); err != nil {
+			how, err := raiseWindow(w.H)
+			if err != nil {
 				fmt.Printf("could not bring %q to the front: %v\n", w.Title, err)
 				return 1
 			}
-			fmt.Printf("brought %q to the front\n", w.Title)
+			fmt.Printf("brought %q to the front (%s)\n", w.Title, how)
 			return 0
 		}
 	}

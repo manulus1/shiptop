@@ -21,18 +21,35 @@ jobs:
       - run: go build -o shiptop.exe .
       - name: read real system data and verify it
         run: .\shiptop.exe --selftest
-      - name: list real windows and bring one to the front
+      - name: list real windows and bring a minimized one to the front
         shell: pwsh
         run: |
-          $np = Start-Process notepad -PassThru
+          Add-Type -Namespace W -Name U -MemberDefinition @'
+          [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+          [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+          [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+          '@
+          Set-Content alpha.txt "alpha"; Set-Content beta.txt "beta"
+          $a = Start-Process notepad -ArgumentList alpha.txt -PassThru
           Start-Sleep -Seconds 3
+          $b = Start-Process notepad -ArgumentList beta.txt -PassThru
+          Start-Sleep -Seconds 3
+          $a.Refresh(); $b.Refresh()
+          [W.U]::ShowWindow($a.MainWindowHandle, 6) | Out-Null   # SW_MINIMIZE
+          Start-Sleep -Seconds 1
+          "foreground before: $([W.U]::GetForegroundWindow()) · alpha $($a.MainWindowHandle) minimized=$([W.U]::IsIconic($a.MainWindowHandle)) · beta $($b.MainWindowHandle)"
           $list = .\shiptop.exe --windows
           $list
-          if (-not ($list -match 'notepad')) { throw "notepad's window is missing from the window list" }
-          .\shiptop.exe --raise Notepad
-          "raise exit code: $LASTEXITCODE (0 = notepad is the foreground window now)"
-          Stop-Process -Id $np.Id -ErrorAction SilentlyContinue
-          exit 0
+          if (-not ($list -match 'alpha.txt - Notepad.*\(minimized\)')) { throw "alpha should be listed as minimized" }
+          if (-not ($list -match 'beta.txt - Notepad')) { throw "beta is missing from the window list" }
+          .\shiptop.exe --raise alpha.txt
+          if ($LASTEXITCODE -ne 0) { throw "--raise failed" }
+          Start-Sleep -Milliseconds 500
+          $fg = [W.U]::GetForegroundWindow()
+          "foreground after: $fg · alpha minimized=$([W.U]::IsIconic($a.MainWindowHandle))"
+          if ($fg -ne $a.MainWindowHandle) { throw "alpha is not the foreground window" }
+          if ([W.U]::IsIconic($a.MainWindowHandle)) { throw "alpha is still minimized" }
+          Stop-Process -Id $a.Id, $b.Id -ErrorAction SilentlyContinue
 
   linux:
     name: linux · live selftest

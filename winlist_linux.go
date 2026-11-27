@@ -8,4 +8,4 @@ var errNoWinList = errors.New("the window list needs Windows")
 
 var readWindows = func() ([]Win, error) { return nil, errNoWinList }
 
-func raiseWindow(h uintptr) error { return errNoWinList }
+func raiseWindow(h uintptr) (string, error) { return "", errNoWinList }

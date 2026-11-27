@@ -143,11 +143,11 @@ var readWindows = func() ([]Win, error) {
 // Windows only lets the process that received the last input change the foreground window,
 // and that is the terminal, not shiptop; so when the plain call is refused, shiptop briefly
 // attaches to the input of the current foreground thread (what task switchers do).
-func raiseWindow(h uintptr) error {
+func raiseWindow(h uintptr) (string, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	if call(pIsWindow, h) == 0 {
-		return errors.New("the window was closed")
+		return "", errors.New("the window was closed")
 	}
 	if call(pIsIconic, h) != 0 {
 		call(pShowWindowAsync, h, swRestore)
@@ -163,7 +163,7 @@ func raiseWindow(h uintptr) error {
 	}
 	call(pSetForegroundWindow, h)
 	if isFront() {
-		return nil
+		return "SetForegroundWindow", nil
 	}
 	var msg [64]byte
 	call(pPeekMessageW, uintptr(unsafe.Pointer(&msg[0])), 0, 0, 0, 0) // PM_NOREMOVE: gives this thread a message queue
@@ -176,11 +176,11 @@ func raiseWindow(h uintptr) error {
 		}
 	}
 	if isFront() {
-		return nil
+		return "attached input", nil
 	}
 	call(pSwitchToThisWindow, h, 1)
 	if isFront() {
-		return nil
+		return "SwitchToThisWindow", nil
 	}
-	return errors.New("Windows kept the current window in front")
+	return "", errors.New("Windows kept the current window in front")
 }
