@@ -35,7 +35,8 @@ where your CPU is working.
 - **notebook**: a pixel-art 3D laptop rendered right in the terminal with half-block characters, coloured
   like a thermal camera by your **real** CPU and GPU load. Shows GPU load, battery draw in watts, time left,
   battery health and cycle count, and real temperatures where your laptop exposes them.
-  Press `z` to zoom, arrows to rotate, `t` for visible light.
+  Press `z` to zoom, arrows to rotate, `t` for visible light, `g` for the resolution: up to 2×4 pixels per
+  character with the octant characters of Cascadia Code (Windows Terminal's font), anti-aliased.
 
 <p align="center"><img src="docs/notebook.gif" alt="rotating 3D thermal laptop" width="60%"></p>
 
@@ -81,6 +82,7 @@ Just want to look? There is a [browser demo](https://manulus1.github.io/shiptop/
 | `p` / `Space` | pause · `+` `-` update interval (250 ms to 5 s) |
 | `b` `n` | previous / next network adapter |
 | `t` | thermal / visible light on the notebook |
+| `g` | notebook resolution: 1×2 (half blocks, any font), 2×2 (quadrants), 2×3 (sextants), 2×4 (octants). Sextants and octants need Cascadia Code 2404 or newer (Windows Terminal updates it) or a recent Linux terminal; if you see boxes, press `g` until it looks right. The choice is saved. |
 | `z` | zoom the notebook (arrows rotate it) |
 | `m` | matrix mode: digital rain made from live data (`m` / `Esc` back) |
 | `Tab` | switch the arrow keys between the process list and the window list |
@@ -147,7 +149,7 @@ lsass or svchost, as well as itself.
 
 ## How it works
 
-- Pure Go standard library, about 6,400 lines, no cgo and no third-party modules.
+- Pure Go standard library, about 6,800 lines, no cgo and no third-party modules.
 - Windows data comes from the same sources Task Manager uses: `NtQuerySystemInformation` for processes and
   per-core times, `GetPerformanceInfo`, `GlobalMemoryStatusEx`, `GetDiskFreeSpaceExW`, `GetIfEntry`.
 - The screen is a cell buffer flushed as 24-bit ANSI with diffing, so only changed cells are written.
@@ -158,7 +160,10 @@ lsass or svchost, as well as itself.
   window, and that is the terminal, so to bring a window to the front shiptop briefly attaches to the
   input of the current foreground window, as task switchers do.
 - The laptop is a tiny software rasterizer: z-buffer, perspective-correct texture lookup, flat lighting,
-  a pixel-art outline pass, and a heat field sampled on a 32×22 grid.
+  a pixel-art outline pass, and a heat field sampled on a 32×22 grid. It renders at twice the resolution
+  and averages (anti-aliasing), then each character cell gets the two colours that fit its 2×4 (or 2×3, 2×2,
+  1×2) sub-pixels best and the mosaic character for that pattern. The character tables are generated from
+  the Unicode character names ([`tools/mosaic_gen.py`](tools/mosaic_gen.py)).
 
 ### How it is verified
 

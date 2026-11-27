@@ -66,6 +66,7 @@ type View struct {
 	Therm, Zoom     bool
 	Matrix          bool // matrix mode (key m)
 	Edit            bool // layout editor (key l)
+	Pix             int  // notebook resolution: index into pixModes (key g)
 	Hold            time.Time
 }
 
@@ -374,7 +375,7 @@ func floorTex(u, v float64, x, y int) uint32 {
 		}
 		return TRANSP
 	}
-	if pw < 60 {
+	if nbCW < 60 {
 		return TRANSP
 	}
 	r, a := math.Hypot(X, Z+3), math.Atan2(Z+3, X)
@@ -393,18 +394,39 @@ func floorTex(u, v float64, x, y int) uint32 {
 // ---- tiny software rasterizer ----
 
 var (
-	pw, ph                           int
+	pw, ph                           int // render buffer in pixels (sub-cells × supersampling)
 	px                               []uint32
 	zb                               []float32
 	idb                              []uint8
 	camCY, camSY, camCP, camSP, camF float64
 	camOX, camOY                     float64
-	fitKey                           [3]float64
+	fitKey                           [4]float64
+	nbCW, nbCH                       int    // the view in terminal cells
+	nbSS                             = 1    // supersampling factor (anti-aliasing)
+	nbAsp                            = 1.0  // pixel height / pixel width (cells are about twice as tall as wide)
+	nbKey                            [3]int // cells and mode of the last render (blit checks it)
+	nbHot                            [3]int // cell of the hottest spot, [2] = 1 if it is in view
 )
+
+// pixMode: how many sub-pixels one terminal cell shows. More sub-pixels need newer fonts:
+// half blocks are everywhere, quadrants almost everywhere, sextants and octants come with
+// Cascadia Code 2404+ (Windows Terminal) and modern Linux terminals.
+type pixMode struct {
+	ID, Name string
+	CX, CY   int
+	Runes    []rune
+}
+
+var pixModes = []pixMode{
+	{"half", "1×2", 1, 2, halfRunes[:]},
+	{"quad", "2×2", 2, 2, quadRunes[:]},
+	{"sext", "2×3", 2, 3, sextRunes[:]},
+	{"oct", "2×4", 2, 4, octRunes[:]},
+}
 
 // fitCam sizes the camera so the model fits the view at every yaw angle (no pumping while it turns).
 func fitCam() {
-	key := [3]float64{float64(pw), float64(ph), V.Pitch}
+	key := [4]float64{float64(pw), float64(ph), V.Pitch, nbAsp}
 	if key == fitKey {
 		return
 	}
@@ -417,7 +439,7 @@ func fitCam() {
 		th := 108 * math.Pi / 180
 		pts = append(pts, [3]float64{x, BY1 + math.Sin(th)*LS, BZ0 + .2 + math.Cos(th)*LS}, [3]float64{x, BY1 + math.Sin(th)*LS + math.Cos(th)*LT, BZ0 + .2 + math.Cos(th)*LS - math.Sin(th)*LT})
 	}
-	if pw >= 60 {
+	if nbCW >= 60 {
 		for a := 0.0; a < 2*math.Pi; a += math.Pi / 8 {
 			pts = append(pts, [3]float64{21.5 * math.Cos(a), 0, 21.5*math.Sin(a) - 3})
 		}
@@ -432,8 +454,8 @@ func fitCam() {
 			mnx, mxx, mny, mxy = math.Min(mnx, sx), math.Max(mxx, sx), math.Min(mny, sy), math.Max(mxy, sy)
 		}
 	}
-	camF = math.Min(float64(pw)*.94/(mxx-mnx), float64(ph)*.94/(mxy-mny))
-	camOX = -(mnx + mxx) / 2 * camF
+	camF = math.Min(float64(pw)*.94/((mxx-mnx)*nbAsp), float64(ph)*.94/(mxy-mny))
+	camOX = -(mnx + mxx) / 2 * camF * nbAsp
 	camOY = (mny + mxy) / 2 * camF
 }
 
@@ -450,7 +472,7 @@ func proj(p [3]float64) pv {
 	x, y, z := rot(p[0], p[1]-YC, p[2]+ZC)
 	zz := z + DIST
 	iz := 1 / zz
-	return pv{float64(pw)/2 + camF*x*iz + camOX, float64(ph)/2 - camF*y*iz + camOY, iz, x, y, zz}
+	return pv{float64(pw)/2 + camF*nbAsp*x*iz + camOX, float64(ph)/2 - camF*y*iz + camOY, iz, x, y, zz}
 }
 
 func pk(c uint32, s float64) uint32 {
@@ -524,11 +546,23 @@ func quad(P [4][3]float64, n *[3]float64, fid uint8, tex texFn) {
 
 func nrm(x, y, z float64) *[3]float64 { return &[3]float64{x, y, z} }
 
-func nbRender(w, h int) {
-	if w < 4 || h < 4 {
+// nbRender draws the laptop for a view of cw×ch terminal cells in the current pixel mode.
+func nbRender(cw, ch int) {
+	m := pixModes[V.Pix]
+	if cw < 2 || ch < 2 {
+		nbKey = [3]int{}
 		return
 	}
 	t0 := time.Now()
+	nbCW, nbCH = cw, ch
+	nbSS = 2 // render at twice the resolution and average: smooth edges
+	if cw*m.CX*ch*m.CY*4 > 160000 {
+		nbSS = 1 // a very big zoomed view has enough pixels already; keep the CPU cost down
+	}
+	nbAsp = 2 * float64(m.CX) / float64(m.CY)
+	w, h := cw*m.CX*nbSS, ch*m.CY*nbSS
+	nbKey = [3]int{cw, ch, V.Pix}
+	nbHot = [3]int{}
 	if w != pw || h != ph {
 		pw, ph = w, h
 		px = make([]uint32, w*h)
@@ -557,31 +591,32 @@ func nbRender(w, h int) {
 	quad([4][3]float64{L(BX1, LS, 0), L(BX1, 0, 0), L(BX1, 0, LT), L(BX1, LS, LT)}, nrm(1, 0, 0), 11, edge)
 	quad([4][3]float64{L(BX1, 0, 0), L(BX0, 0, 0), L(BX0, 0, LT), L(BX1, 0, LT)}, nrm(0, -dy, -dz), 12, edge)
 
-	// pixel-art pass: darker silhouette, 1px seams between faces, then an outline around the model
+	// pixel-art pass: darker silhouette, seams between faces, then an outline around the model;
+	// lines are one sub-pixel wide (nbSS render pixels), so they stay crisp at every resolution
 	dk := func(c uint32, f float64) uint32 { return pk(c, f) }
+	id := func(x, y int) uint8 {
+		if x < 0 || y < 0 || x >= pw || y >= ph {
+			return 0
+		}
+		return idb[y*pw+x]
+	}
+	ss := nbSS
 	for y := 0; y < ph; y++ {
 		for x := 0; x < pw; x++ {
 			i := y*pw + x
-			id := idb[i]
-			if id < 2 {
+			me := idb[i]
+			if me < 2 {
 				continue
 			}
-			var l, r, t, b uint8
-			if x > 0 {
-				l = idb[i-1]
+			edge, seam := false, false
+			for d := 1; d <= ss; d++ {
+				l, r, t, b := id(x-d, y), id(x+d, y), id(x, y-d), id(x, y+d)
+				edge = edge || l < 2 || r < 2 || t < 2 || b < 2
+				seam = seam || r != me || b != me
 			}
-			if x < pw-1 {
-				r = idb[i+1]
-			}
-			if y > 0 {
-				t = idb[i-pw]
-			}
-			if y < ph-1 {
-				b = idb[i+pw]
-			}
-			if l < 2 || r < 2 || t < 2 || b < 2 {
+			if edge {
 				px[i] = dk(px[i], .55)
-			} else if r != id || b != id {
+			} else if seam {
 				px[i] = dk(px[i], .78)
 			}
 		}
@@ -596,8 +631,20 @@ func nbRender(w, h int) {
 			if idb[i] > 1 {
 				continue
 			}
-			if (x > 0 && idb[i-1] > 1) || (x < pw-1 && idb[i+1] > 1) || (y > 0 && idb[i-pw] > 1) || (y < ph-1 && idb[i+pw] > 1) {
-				px[i] = ol
+			for d := 1; d <= ss; d++ {
+				if id(x-d, y) > 1 || id(x+d, y) > 1 || id(x, y-d) > 1 || id(x, y+d) > 1 {
+					px[i] = ol
+					break
+				}
+			}
+		}
+	}
+	dot := func(x, y int, c uint32, iz float64) {
+		for yy := y; yy < y+ss; yy++ {
+			for xx := x; xx < x+ss; xx++ {
+				if xx >= 0 && yy >= 0 && xx < pw && yy < ph && (iz == 0 || float32(iz) > zb[yy*pw+xx]) {
+					px[yy*pw+xx] = c
+				}
 			}
 		}
 	}
@@ -610,28 +657,12 @@ func nbRender(w, h int) {
 				continue
 			}
 			q := proj([3]float64{p.X, p.Y, p.Z})
-			x, y := int(q.x), int(q.y)
-			if x < 0 || y < 0 || x >= pw || y >= ph {
-				continue
-			}
-			i := y*pw + x
-			if float32(q.iz) > zb[i] {
-				px[i] = thermT(T)
-			}
+			dot(int(q.x), int(q.y), thermT(T), q.iz)
 		}
 		q := proj([3]float64{NB.Mx - 15.5, BY1, NB.Mz - 10.5})
 		x, y := int(q.x), int(q.y)
-		if x >= 0 && y >= 0 && x < pw && y < ph && idb[y*pw+x] == 2 {
-			a1, a2 := 2, 3
-			if pw < 60 {
-				a1, a2 = 1, 2
-			}
-			for _, o := range [][2]int{{a1, 0}, {a2, 0}, {-a1, 0}, {-a2, 0}, {0, a1}, {0, a2}, {0, -a1}, {0, -a2}} {
-				xx, yy := x+o[0], y+o[1]
-				if xx >= 0 && yy >= 0 && xx < pw && yy < ph {
-					px[yy*pw+xx] = 0xffffff
-				}
-			}
+		if x >= 0 && y >= 0 && x < pw && y < ph && idb[y*pw+x] == 2 { // the hottest spot is visible
+			nbHot = [3]int{x / (m.CX * ss), y / (m.CY * ss), 1}
 		}
 	}
 	NB.Rt = NB.Rt*.9 + float64(time.Since(t0).Microseconds())/1000*.1
@@ -671,20 +702,166 @@ func nbFrame(dt float64) {
 	}
 }
 
-// blit the pixel buffer into terminal cells, two pixels per cell with half blocks
-func blitPixels(sc *Screen, x, y int) {
-	for cy := 0; cy < ph/2; cy++ {
-		for cx := 0; cx < pw; cx++ {
-			t, b := px[(2*cy)*pw+cx], px[(2*cy+1)*pw+cx]
-			switch {
-			case t == TRANSP && b == TRANSP:
-			case t == TRANSP:
-				sc.PutX(x+cx, y+cy, '▄', b, BG, false)
-			case b == TRANSP:
-				sc.PutX(x+cx, y+cy, '▀', t, BG, false)
-			default:
-				sc.PutX(x+cx, y+cy, '▀', t, b, false)
+// nbView draws the laptop into a cw×ch cell area. A render that took long is reused for a few
+// frames (the model turns slowly), so a big zoomed view costs at most about a fifth of a core.
+var nbCache struct {
+	key   [4]int
+	at    time.Time
+	cells []Cell
+	hot   [3]int
+}
+
+func nbView(sc *Screen, x0, y0, cw, ch int) {
+	if cw < 2 || ch < 2 {
+		return
+	}
+	therm := 0
+	if V.Therm {
+		therm = 1
+	}
+	key := [4]int{cw, ch, V.Pix, therm}
+	every := time.Duration(math.Min(NB.Rt*4, 150) * float64(time.Millisecond))
+	if key != nbCache.key || time.Since(nbCache.at) >= every || len(nbCache.cells) != cw*ch {
+		nbRender(cw, ch)
+		nbCache.key, nbCache.at = key, time.Now()
+		if cap(nbCache.cells) < cw*ch {
+			nbCache.cells = make([]Cell, cw*ch)
+		}
+		nbCache.cells = nbCache.cells[:cw*ch]
+		blitCells(nbCache.cells, cw, ch)
+		nbCache.hot = nbHot
+	}
+	for i, c := range nbCache.cells {
+		if c.R != 0 {
+			sc.PutX(x0+i%cw, y0+i/cw, c.R, c.FG, c.BG, false)
+		}
+	}
+	if h := nbCache.hot; V.Therm && h[2] == 1 && h[0] < cw && h[1] < ch { // mark the hottest spot
+		c := nbCache.cells[h[1]*cw+h[0]]
+		bg := c.BG
+		if c.R != ' ' && c.R != 0 {
+			bg = lerp(c.FG, c.BG, .5)
+		}
+		sc.PutX(x0+h[0], y0+h[1], '╋', 0x120a22, bg, true)
+	}
+}
+
+// blitPixels draws the last render directly (used where caching does not matter).
+func blitPixels(sc *Screen, x0, y0, cw, ch int) {
+	if cw < 1 || ch < 1 {
+		return
+	}
+	cells := make([]Cell, cw*ch)
+	blitCells(cells, cw, ch)
+	for i, c := range cells {
+		if c.R != 0 {
+			sc.PutX(x0+i%cw, y0+i/cw, c.R, c.FG, c.BG, false)
+		}
+	}
+}
+
+// blitCells turns the rendered picture into terminal cells (R == 0: nothing drawn there). Each cell
+// shows its sub-pixels (the average of nbSS×nbSS render pixels each) with the two colours that fit
+// them best: a foreground for the sub-pixels drawn by the mosaic character, a background for the rest.
+func blitCells(out []Cell, cw, ch int) {
+	for i := range out {
+		out[i] = Cell{}
+	}
+	if nbKey != [3]int{cw, ch, V.Pix} || len(px) != pw*ph {
+		return
+	}
+	m := pixModes[V.Pix]
+	ss := nbSS
+	n := m.CX * m.CY
+	var sub [8][3]float64
+	bg := [3]float64{float64(BG >> 16 & 255), float64(BG >> 8 & 255), float64(BG & 255)}
+	inv := 1 / float64(ss*ss)
+	for cy := 0; cy < ch; cy++ {
+		for cx := 0; cx < cw; cx++ {
+			seen := false
+			for k := 0; k < n; k++ {
+				var r, g, b float64
+				bx, by := (cx*m.CX+k%m.CX)*ss, (cy*m.CY+k/m.CX)*ss
+				for yy := by; yy < by+ss; yy++ {
+					for xx := bx; xx < bx+ss; xx++ {
+						c := px[yy*pw+xx]
+						if c == TRANSP { // empty: the panel background shows through
+							r, g, b = r+bg[0], g+bg[1], b+bg[2]
+							continue
+						}
+						seen = true
+						r, g, b = r+float64(c>>16&255), g+float64(c>>8&255), b+float64(c&255)
+					}
+				}
+				sub[k] = [3]float64{r * inv, g * inv, b * inv}
+			}
+			if !seen {
+				continue
+			}
+			bits, fg, bgc := split2(sub[:n])
+			r := m.Runes[bits]
+			if bits == 0 || bits == 1<<n-1 {
+				r = ' '
+			}
+			out[cy*cw+cx] = Cell{r, fg, bgc, false}
+		}
+	}
+}
+
+// split2 divides a cell's sub-pixel colours into two groups (2-means, seeded with the two most
+// different colours) and returns which sub-pixels belong to the first group and both mean colours.
+// A cell that is one colour (or as good as) comes back as bits 0 with that colour as background.
+func split2(c [][3]float64) (bits int, fg, bg uint32) {
+	d2 := func(a, b [3]float64) float64 {
+		dr, dg, db := a[0]-b[0], a[1]-b[1], a[2]-b[2]
+		return dr*dr + dg*dg + db*db
+	}
+	pack := func(v [3]float64) uint32 {
+		return uint32(clamp(v[0]+.5, 0, 255))<<16 | uint32(clamp(v[1]+.5, 0, 255))<<8 | uint32(clamp(v[2]+.5, 0, 255))
+	}
+	ia, ib, far := 0, 0, -1.0
+	for i := range c {
+		for j := i + 1; j < len(c); j++ {
+			if d := d2(c[i], c[j]); d > far {
+				ia, ib, far = i, j, d
 			}
 		}
 	}
+	mean := func(sel func(int) bool) ([3]float64, int) {
+		var s [3]float64
+		k := 0
+		for i, v := range c {
+			if sel(i) {
+				s[0], s[1], s[2] = s[0]+v[0], s[1]+v[1], s[2]+v[2]
+				k++
+			}
+		}
+		if k > 0 {
+			s[0], s[1], s[2] = s[0]/float64(k), s[1]/float64(k), s[2]/float64(k)
+		}
+		return s, k
+	}
+	all, _ := mean(func(int) bool { return true })
+	if far < 6*6*3 { // practically one colour
+		return 0, pack(all), pack(all)
+	}
+	a, b := c[ia], c[ib]
+	for iter := 0; iter < 3; iter++ {
+		bits = 0
+		for i, v := range c {
+			if d2(v, a) < d2(v, b) {
+				bits |= 1 << i
+			}
+		}
+		na, ka := mean(func(i int) bool { return bits&(1<<i) != 0 })
+		nb, kb := mean(func(i int) bool { return bits&(1<<i) == 0 })
+		if ka == 0 || kb == 0 {
+			break
+		}
+		a, b = na, nb
+	}
+	if bits == 0 || bits == 1<<len(c)-1 {
+		return 0, pack(all), pack(all)
+	}
+	return bits, pack(a), pack(b)
 }

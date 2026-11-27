@@ -75,6 +75,7 @@ func main() {
 	if L.Root, note = loadLayout(); note != "" {
 		say(WARN, note, false)
 	}
+	loadSettings()
 	go detailWorker()
 
 	keys := make(chan string, 64)
@@ -258,6 +259,7 @@ keys
   p / Space      pause                                   + -  slower / faster updates
   b n            previous / next network adapter
   t              thermal / visible light on the notebook model
+  g              notebook resolution: 1×2, 2×2, 2×3 or 2×4 pixels per character (finer needs a newer font)
   z              zoom the notebook (arrows rotate while zoomed)
   m              matrix mode: digital rain driven by live load (m / Esc back)
   l              layout editor: move, resize and swap panels (Enter save, Esc cancel)
@@ -427,6 +429,13 @@ func handleKey(k string) bool {
 	case "t":
 		V.Therm = !V.Therm
 		flash("nb")
+	case "g", "G":
+		V.Pix = (V.Pix + 1) % len(pixModes)
+		flash("nb")
+		say(OK, "notebook: "+pixModes[V.Pix].Name+" pixels per character "+pixNote[pixModes[V.Pix].ID], false)
+		if err := saveSettings(); err != nil {
+			say(WARN, "notebook pixels set, but not saved: "+err.Error(), false)
+		}
 	case "z", "5":
 		V.Zoom = !V.Zoom
 	case "m", "M":
@@ -560,7 +569,11 @@ func drawNB(sc *Screen, x, y, w, h int) {
 		zt = "back"
 	}
 	if w >= 44 {
-		sc.LabelR(rx-1, y, true, col, Seg{"z ", HI, false}, Seg{zt, TITLE, false})
+		rx = sc.LabelR(rx-1, y, true, col, Seg{"z ", HI, false}, Seg{zt, TITLE, false})
+		g := []Seg{{"g ", HI, false}, {pixModes[V.Pix].Name, TITLE, false}}
+		if rx-1-segLen(g) > x+2+segLen([]Seg{{"⁵notebook", 0, false}}) { // only where it fits next to the title
+			sc.LabelR(rx-1, y, true, col, g...)
+		}
 	}
 	pw := S.Power
 	var br []Seg
@@ -590,10 +603,9 @@ func drawNB(sc *Screen, x, y, w, h int) {
 		return
 	}
 	vw := iw - 5
-	nbRender(vw, vh*2)
-	blitPixels(sc, ix, iy)
+	nbView(sc, ix, iy, vw, vh)
 	if V.Zoom {
-		sc.Str(ix+1, iy+vh-1, "← → ↑ ↓ rotate · t thermal · z back", DIM, vw-2)
+		sc.Str(ix+1, iy+vh-1, "← → ↑ ↓ rotate · t thermal · g pixels · z back", DIM, vw-2)
 	}
 	lx := ix + iw - 4
 	sc.Str(lx, iy, fmt.Sprintf("%.0f°", spanHi), DIM, 0)

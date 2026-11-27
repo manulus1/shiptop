@@ -48,6 +48,7 @@ func TestPanelsStayInTheirTile(t *testing.T) {
 				WS.Sel, S.Sel = 0, 0
 			}
 			S.Sort = []string{"cpu", "energy", "gpu", "name"}[round%4]
+			V.Pix, V.Therm = round%len(pixModes), round%2 == 0
 			for i := range sc.C {
 				sc.C[i] = Cell{'#', 1, 2, false}
 			}
