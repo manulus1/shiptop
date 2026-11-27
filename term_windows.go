@@ -52,8 +52,10 @@ func termInit() error {
 			return errors.New("this console has no VT support (use Windows Terminal or Windows 10 1809+)")
 		}
 	}
-	// raw input: no line input, no echo, no processed input, no quick edit; VT input + extended flags
-	nm := (inMode &^ (0x1 | 0x2 | 0x4 | 0x40)) | 0x200 | 0x80
+	// raw input: no line input, no echo, no processed input, no quick edit; VT input + extended flags.
+	// ENABLE_MOUSE_INPUT (0x10) with VT input: Windows Terminal and the Windows 11 console deliver
+	// clicks, drags and the wheel as SGR sequences once mouse reporting is switched on (mouseOn).
+	nm := (inMode &^ (0x1 | 0x2 | 0x4 | 0x40)) | 0x200 | 0x80 | 0x10
 	pSetConsoleMode.Call(hin(), uintptr(nm))
 	return nil
 }

@@ -21,6 +21,18 @@ jobs:
       - run: go build -o shiptop.exe .
       - name: read real system data and verify it
         run: .\shiptop.exe --selftest
+      - name: list real windows and bring one to the front
+        shell: pwsh
+        run: |
+          $np = Start-Process notepad -PassThru
+          Start-Sleep -Seconds 3
+          $list = .\shiptop.exe --windows
+          $list
+          if (-not ($list -match 'notepad')) { throw "notepad's window is missing from the window list" }
+          .\shiptop.exe --raise Notepad
+          "raise exit code: $LASTEXITCODE (0 = notepad is the foreground window now)"
+          Stop-Process -Id $np.Id -ErrorAction SilentlyContinue
+          exit 0
 
   linux:
     name: linux · live selftest

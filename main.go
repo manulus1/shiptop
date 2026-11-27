@@ -10,13 +10,13 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unicode/utf8"
 )
 
-const version = "5.2.0"
+const version = "5.3.0"
 
 func main() {
-	for _, a := range os.Args[1:] {
+	args := os.Args[1:]
+	for i, a := range args {
 		switch a {
 		case "-h", "--help", "/?":
 			fmt.Print(helpText)
@@ -30,6 +30,22 @@ func main() {
 		case "--selftest":
 			once(true)
 			return
+		case "--windows":
+			os.Exit(listWindows())
+		case "--raise":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "usage: shiptop --raise TEXT   (brings the first window whose title contains TEXT to the front)")
+				os.Exit(2)
+			}
+			os.Exit(raiseByTitle(args[i+1]))
+		case "--reset-layout":
+			path, err := saveLayout(nil)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "shiptop:", err)
+				os.Exit(1)
+			}
+			fmt.Println("removed", path, "· shiptop uses the built-in layout again")
+			return
 		}
 	}
 	if err := termInit(); err != nil {
@@ -37,9 +53,9 @@ func main() {
 		os.Exit(1)
 	}
 	out := os.Stdout
-	out.WriteString("\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[2J\x1b]0;shiptop\x07")
+	out.WriteString("\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[2J\x1b]0;shiptop\x07" + mouseOn)
 	restore := func() {
-		out.WriteString("\x1b[?2026l\x1b[0m\x1b[2J\x1b[H\x1b[?7h\x1b[?25h\x1b[?1049l")
+		out.WriteString(mouseOff + "\x1b[?2026l\x1b[0m\x1b[2J\x1b[H\x1b[?7h\x1b[?25h\x1b[?1049l")
 		termRestore()
 	}
 	defer func() {
@@ -55,6 +71,10 @@ func main() {
 	nbInit()
 	update() // prime counters; rates need two samples
 	say(OK, "reading live system data", false)
+	var note string
+	if L.Root, note = loadLayout(); note != "" {
+		say(WARN, note, false)
+	}
 	go detailWorker()
 
 	keys := make(chan string, 64)
@@ -79,6 +99,8 @@ func main() {
 			return
 		case d := <-detResC:
 			applyDetail(d)
+		case r := <-raiseResC:
+			applyRaise(r)
 		case <-tick.C:
 			if !S.Paused {
 				update()
@@ -222,8 +244,14 @@ usage: shiptop.exe           run inside Windows Terminal / PowerShell (bigger wi
        shiptop.exe --once    print one plain-text sample and exit
        shiptop.exe --selftest   same, but exit 1 if any reading is missing (used by CI)
 
+       shiptop.exe --windows        list the open windows the windows panel shows
+       shiptop.exe --raise TEXT     bring the first window whose title contains TEXT to the front
+       shiptop.exe --reset-layout   forget the saved layout
+
 keys
-  ↑ ↓ PgUp PgDn  select process     ← →  sort column      r  reverse sort
+  ↑ ↓ PgUp PgDn  select process (or window)   ← →  sort column      r  reverse sort
+  Tab            switch between the process list and the window list
+  Enter          bring the selected window to the front (window list)
   k / Del        terminate the selected process (asks y/n first)
   f              filter (Enter/Esc to finish)            Esc  deselect, then clear filter
   e              energy view: who causes the most CPU+GPU activity (and drains the battery)
@@ -232,83 +260,35 @@ keys
   t              thermal / visible light on the notebook model
   z              zoom the notebook (arrows rotate while zoomed)
   m              matrix mode: digital rain driven by live load (m / Esc back)
+  l              layout editor: move, resize and swap panels (Enter save, Esc cancel)
   q              quit
+
+mouse (Windows Terminal, Windows 11 console, Linux terminals)
+  click a row to select it · double-click a window to bring it to the front · wheel scrolls lists
+  in the layout editor: drag panels onto each other or onto an edge, drag borders, wheel = other panel
+
+layout editor keys
+  Tab select panel · ←↑↓→ / hjkl swap with neighbour · Shift+←↑↓→ / HJKL move an edge
+  Ctrl+←↑↓→ move to that screen edge · Space other panel type · a add · x remove
+  s side by side / stacked · = equal sizes · r built-in layout · Enter save · Esc cancel
 
 All numbers are read live from the system. Temperatures come from the ACPI thermal zone where
 the laptop exposes one; otherwise they are modelled from the real load and marked ~.
 `
 
-func readKeys(ch chan<- string) {
-	buf := make([]byte, 512)
-	for {
-		n, err := os.Stdin.Read(buf)
-		if err != nil {
-			close(ch)
-			return
-		}
-		parseKeys(buf[:n], ch)
-	}
-}
-
-func parseKeys(b []byte, ch chan<- string) {
-	for i := 0; i < len(b); {
-		c := b[i]
-		if c == 0x1b {
-			if i+1 < len(b) && (b[i+1] == '[' || b[i+1] == 'O') {
-				j := i + 2
-				for j < len(b) && !(b[j] >= 0x40 && b[j] <= 0x7e) {
-					j++
-				}
-				if j < len(b) {
-					switch string(b[i+2 : j+1]) {
-					case "A":
-						ch <- "up"
-					case "B":
-						ch <- "down"
-					case "C":
-						ch <- "right"
-					case "D":
-						ch <- "left"
-					case "3~":
-						ch <- "del"
-					case "5~":
-						ch <- "pgup"
-					case "6~":
-						ch <- "pgdn"
-					case "H", "1~":
-						ch <- "home"
-					case "F", "4~":
-						ch <- "end"
-					}
-					i = j + 1
-					continue
-				}
-			}
-			ch <- "esc"
-			i++
-			continue
-		}
-		switch {
-		case c == 3:
-			ch <- "ctrl-c"
-		case c == 13 || c == 10:
-			ch <- "enter"
-		case c == 127 || c == 8:
-			ch <- "bs"
-		case c < 32:
-		default:
-			r, sz := utf8.DecodeRune(b[i:])
-			ch <- string(r)
-			i += sz
-			continue
-		}
-		i++
-	}
-}
-
 func handleKey(k string) bool {
 	if k == "ctrl-c" {
 		return true
+	}
+	if m, ok := parseMouse(k); ok { // the mouse never answers a y/n question or types into the filter
+		if S.Confirm == 0 && !S.Filtering {
+			handleMouse(m)
+		}
+		return false
+	}
+	if V.Edit {
+		editKey(k)
+		return false
 	}
 	if S.Confirm != 0 { // waiting for y/n: only "y" terminates
 		if k == "y" || k == "Y" {
@@ -344,6 +324,14 @@ func handleKey(k string) bool {
 		return false
 	}
 	hold := func() { V.Hold = time.Now().Add(3 * time.Second) }
+	wins := focused() == "windows" && !V.Zoom // arrow keys go to the window list
+	nav := func(d int) {
+		if wins {
+			winMove(d)
+		} else {
+			move(d)
+		}
+	}
 	switch k {
 	case "q", "Q":
 		return true
@@ -351,33 +339,45 @@ func handleKey(k string) bool {
 		switch {
 		case V.Zoom:
 			V.Zoom = false
+		case wins && WS.Sel != 0:
+			WS.Sel = 0
 		case S.Sel != 0:
 			deselect()
 		default:
 			S.Flt = ""
 		}
+	case "tab":
+		cycleFocus(1)
+	case "shift-tab":
+		cycleFocus(-1)
+	case "enter":
+		if wins {
+			raiseSelected()
+		}
+	case "l", "L":
+		enterEditor()
 	case "up":
 		if V.Zoom {
 			V.Pitch = clamp(V.Pitch-.08, .12, .95)
 			hold()
 		} else {
-			move(-1)
+			nav(-1)
 		}
 	case "down":
 		if V.Zoom {
 			V.Pitch = clamp(V.Pitch+.08, .12, .95)
 			hold()
 		} else {
-			move(1)
+			nav(1)
 		}
 	case "pgup":
-		move(-10)
+		nav(-10)
 	case "pgdn":
-		move(10)
+		nav(10)
 	case "home":
-		move(-1 << 20)
+		nav(-1 << 20)
 	case "end":
-		move(1 << 20)
+		nav(1 << 20)
 	case "left", "right":
 		d := 1
 		if k == "left" {
@@ -431,53 +431,9 @@ func handleKey(k string) bool {
 		V.Zoom = !V.Zoom
 	case "m", "M":
 		V.Matrix = true
-		mx.w = 0 // start with an empty screen, the rain fills it
+		mxFull.w = 0 // start with an empty screen, the rain fills it
 	}
 	return false
-}
-
-func boxCol(base uint32, key string) uint32 {
-	if time.Now().Before(S.Flash[key]) {
-		return lerp(base, 0xffffff, .45)
-	}
-	return base
-}
-
-func draw(sc *Screen) {
-	sc.Clear()
-	W, H := sc.W, sc.H
-	if W < 80 || H < 24 {
-		m := fmt.Sprintf("shiptop needs at least 80×24 · this window is %d×%d", W, H)
-		sc.Str(maxi(0, (W-rlen(m))/2), H/2, m, WARN, W)
-		sc.Str(maxi(0, (W-22)/2), H/2+1, "make the window bigger", DIM, W)
-		return
-	}
-	if V.Matrix {
-		drawMatrix(sc)
-		return
-	}
-	drawHeader(sc)
-	if V.Zoom {
-		drawNB(sc, 0, 1, W, H-1)
-		return
-	}
-	avail := H - 1
-	topH := maxi(10, int(math.Round(float64(avail)*.42)))
-	nbW := 0
-	if W >= 100 {
-		nbW = clampi(int(float64(W)*.34), 38, 76)
-	}
-	drawCPU(sc, 0, 1, W-nbW, topH)
-	if nbW > 0 {
-		drawNB(sc, W-nbW, 1, nbW, topH)
-	}
-	y0 := 1 + topH
-	bh := H - y0
-	lw := clampi(int(float64(W)*.44), 40, W-40)
-	memH := bh * 52 / 100
-	drawMem(sc, 0, y0, lw, memH)
-	drawNet(sc, 0, y0+memH, lw, bh-memH)
-	drawProc(sc, lw, y0, W-lw, bh)
 }
 
 func drawHeader(sc *Screen) {
@@ -876,11 +832,6 @@ type pcol struct {
 func drawProc(sc *Screen, x, y, w, h int) {
 	col := boxCol(CPROC, "proc")
 	sc.Box(x, y, w, h, col)
-	if S.Sort == "energy" {
-		sc.Label(x+2, y, true, col, Seg{"⁴", HI, false}, Seg{"proc", TITLE, true}, Seg{" · energy", WARN, true})
-	} else {
-		sc.Label(x+2, y, true, col, Seg{"⁴", HI, false}, Seg{"proc", TITLE, true})
-	}
 	revC := uint32(DIM)
 	if S.Rev {
 		revC = TITLE
@@ -894,7 +845,18 @@ func drawProc(sc *Screen, x, y, w, h int) {
 		}
 		fl = append(fl, Seg{": " + S.Flt + cursor, TITLE, true})
 	}
-	sc.LabelR(rx-1, y, true, col, fl...)
+	fx := sc.LabelR(rx-1, y, true, col, fl...)
+	title := []Seg{{"⁴", HI, false}, {"proc", TITLE, true}}
+	if S.Sort == "energy" {
+		title = append(title, Seg{" · energy", WARN, true})
+		for _, part := range strings.Split(powerLine(), " · ") {
+			title = append(title, Seg{" · " + part, FG, false})
+		}
+		title = append(title, Seg{" · estimate from cpu+gpu share", DIM, false})
+	}
+	if t := fitSegs(title, fx-1-(x+2), 2); len(t) > 0 {
+		sc.Label(x+2, y, true, col, t...)
+	}
 
 	a := list()
 	idx := -1
@@ -907,19 +869,25 @@ func drawProc(sc *Screen, x, y, w, h int) {
 		S.Sel, S.Confirm = 0, 0
 	}
 	cx := sc.LabelR(x+w-2, y+h-1, false, col, Seg{fmt.Sprintf("%d/%d", len(a), len(S.Procs)), TITLE, false})
-	keys := "↑↓ select  ←→ sort  e energy  k terminate  f filter  p pause  t thermal  z zoom  m matrix  q quit"
+	keys := "↑↓ select  ←→ sort  e energy  k terminate  f filter  l layout  m matrix  p pause  t thermal  z zoom  q quit"
+	if len(visibleLists()) > 1 {
+		keys = "Tab focus  " + keys
+	}
 	if room := cx - (x + 2) - 3; room > 10 {
 		sc.Label(x+2, y+h-1, false, col, Seg{trunc(keys, room), DIM, false})
 	}
 
 	ix, iy, iw, ih := x+1, y+1, w-2, h-2
-	dh := 5
-	if ih < 14 {
-		dh = 4
+	dh := 0 // the detail box only appears while a process is selected
+	if cur() != nil {
+		dh = 5
+		if ih < 14 {
+			dh = 4
+		}
 	}
 	dcol := lerp(col, BG, .35)
-	sc.Box(ix, iy, iw, dh, dcol)
 	if p := cur(); p != nil {
+		sc.Box(ix, iy, iw, dh, dcol)
 		wantDetail(p)
 		sc.Label(ix+2, iy, true, dcol, Seg{fmt.Sprintf("%d ", p.Pid), DIM, false}, Seg{trunc(p.Name, iw/2), TITLE, true})
 		sc.LabelR(ix+iw-2, iy, true, dcol, Seg{"cpu ", DIM, false}, Seg{fmt.Sprintf("%.1f%%", p.CPU), TITLE, false})
@@ -975,33 +943,6 @@ func drawProc(sc *Screen, x, y, w, h int) {
 		if gwid > 0 {
 			gx := ix + iw - 1 - gwid
 			sc.Graph(gx, iy+1, gwid, dh-2, p.H, math.Max(5, maxOf(p.H, len(p.H)))*1.1, gHeat, false)
-		}
-	} else {
-		sc.Str(ix+2, iy+1, "nothing selected · ↑ ↓ to select a process · Esc deselects", DIM, iw-4)
-		var top *Proc
-		for _, p := range S.Procs {
-			if top == nil || p.CPU > top.CPU {
-				top = p
-			}
-		}
-		if S.Sort == "energy" && dh == 5 {
-			ps := S.Power
-			line := "on AC power"
-			switch {
-			case !ps.HasBattery:
-				line = "no battery"
-			case ps.RateOK && ps.RateW < 0:
-				line = fmt.Sprintf("on battery %s · %s left", fWatts(ps.RateW), fDur(ps.Remaining))
-			case ps.RateOK && ps.RateW > 0:
-				line = fmt.Sprintf("charging %s", fWatts(ps.RateW))
-			}
-			sc.Str(ix+2, iy+2, line+" · energy = share of CPU+GPU activity (estimate)", FG, iw-4)
-		} else if top != nil && dh == 5 {
-			x2 := sc.Str(ix+2, iy+2, "busiest now: ", DIM, 0)
-			sc.Str(x2, iy+2, fmt.Sprintf("%s · %.1f%% cpu · %s", top.Name, top.CPU, fBytes(float64(top.Mem))), FG, iw-4-(x2-ix-2))
-		}
-		if S.DMsg != "" {
-			sc.Str(ix+2, iy+dh-2, trunc("» "+S.DMsg, iw-4), S.DMsgC, 0)
 		}
 	}
 
@@ -1098,8 +1039,10 @@ func drawProc(sc *Screen, x, y, w, h int) {
 		}
 		sc.LabelR(ix+iw-2, iy+dh-1, false, dcol, Seg{arrow, HI, false}, Seg{trunc(where, iw/2), DIM, false})
 	}
+	hitProc = rowHit{R: Rect{ix, hy + 1, iw, nrows}, Y0: hy + 1}
 	for r := 0; r < nrows && S.Scroll+r < len(a); r++ {
 		p := a[S.Scroll+r]
+		hitProc.Keys = append(hitProc.Keys, uintptr(p.Pid))
 		wantDetail(p)
 		ry := hy + 1 + r
 		fg := uint32(FG)

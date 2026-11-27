@@ -155,6 +155,9 @@ func update() {
 	}
 	S.Therm = readThermal()
 	S.Up = uptime()
+	if _, ok := L.Last.Rects["windows"]; ok {
+		refreshWindows()
+	}
 	nbStep()
 	S.Tick++
 }

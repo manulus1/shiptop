@@ -198,3 +198,20 @@ func pad2(n int) string {
 	}
 	return strconv.Itoa(n)
 }
+
+// powerLine says how the machine is powered right now, for the energy view.
+func powerLine() string {
+	ps := S.Power
+	switch {
+	case !ps.HasBattery:
+		return "no battery"
+	case ps.RateOK && ps.RateW < 0:
+		if ps.Remaining > 0 {
+			return "on battery " + fWatts(ps.RateW) + " · " + fDur(ps.Remaining) + " left"
+		}
+		return "on battery " + fWatts(ps.RateW)
+	case ps.RateOK && ps.RateW > 0:
+		return "charging " + fWatts(ps.RateW)
+	}
+	return "on AC power"
+}

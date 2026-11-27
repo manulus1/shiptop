@@ -65,6 +65,7 @@ type View struct {
 	Yaw, Pitch, Lid float64
 	Therm, Zoom     bool
 	Matrix          bool // matrix mode (key m)
+	Edit            bool // layout editor (key l)
 	Hold            time.Time
 }
 

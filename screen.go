@@ -67,9 +67,22 @@ type Cell struct {
 }
 
 type Screen struct {
-	W, H int
-	C, P []Cell
-	buf  []byte
+	W, H               int
+	C, P               []Cell
+	buf                []byte
+	clip               bool // when set, drawing outside [cx0,cx1)×[cy0,cy1) is ignored (each panel stays inside its tile)
+	cx0, cy0, cx1, cy1 int
+}
+
+// Clip restricts all drawing to the given rectangle until NoClip.
+func (s *Screen) Clip(x, y, w, h int) { s.clip, s.cx0, s.cy0, s.cx1, s.cy1 = true, x, y, x+w, y+h }
+func (s *Screen) NoClip()             { s.clip = false }
+
+func (s *Screen) in(x, y int) bool {
+	if x < 0 || y < 0 || x >= s.W || y >= s.H {
+		return false
+	}
+	return !s.clip || (x >= s.cx0 && x < s.cx1 && y >= s.cy0 && y < s.cy1)
 }
 
 func (s *Screen) Resize(w, h int) {
@@ -122,7 +135,7 @@ func isWide(r rune) bool {
 }
 
 func (s *Screen) Put(x, y int, r rune, fg uint32) {
-	if x < 0 || y < 0 || x >= s.W || y >= s.H {
+	if !s.in(x, y) {
 		return
 	}
 	c := &s.C[y*s.W+x]
@@ -130,7 +143,7 @@ func (s *Screen) Put(x, y int, r rune, fg uint32) {
 }
 
 func (s *Screen) PutX(x, y int, r rune, fg, bg uint32, bold bool) {
-	if x < 0 || y < 0 || x >= s.W || y >= s.H {
+	if !s.in(x, y) {
 		return
 	}
 	s.C[y*s.W+x] = Cell{cellRune(r), fg, bg, bold}
@@ -138,7 +151,7 @@ func (s *Screen) PutX(x, y int, r rune, fg, bg uint32, bold bool) {
 
 func (s *Screen) SetBG(x, y, w int, bg uint32) {
 	for i := 0; i < w; i++ {
-		if x+i >= 0 && x+i < s.W && y >= 0 && y < s.H {
+		if s.in(x+i, y) {
 			s.C[y*s.W+x+i].BG = bg
 		}
 	}
@@ -163,10 +176,20 @@ func (s *Screen) Bold(x, y int, str string, fg uint32, max int) int {
 		if max > 0 && n >= max {
 			break
 		}
-		if x+n >= 0 && x+n < s.W && y >= 0 && y < s.H {
+		if s.in(x+n, y) {
 			c := &s.C[y*s.W+x+n]
 			c.R, c.FG, c.B = cellRune(r), fg, true
 		}
+		n++
+	}
+	return x + n
+}
+
+// Fill writes text with its own background colour; returns the next x.
+func (s *Screen) Fill(x, y int, str string, fg, bg uint32, bold bool) int {
+	n := 0
+	for _, r := range str {
+		s.PutX(x+n, y, r, fg, bg, bold)
 		n++
 	}
 	return x + n
@@ -216,6 +239,25 @@ func (s *Screen) Box(x, y, w, h int, col uint32) {
 	s.Put(x+w-1, y, '╮', col)
 	s.Put(x, y+h-1, '╰', col)
 	s.Put(x+w-1, y+h-1, '╯', col)
+}
+
+// Box2 is a double-line frame (used to mark the selected panel in the layout editor).
+func (s *Screen) Box2(x, y, w, h int, col uint32) {
+	if w < 2 || h < 2 {
+		return
+	}
+	for i := 1; i < w-1; i++ {
+		s.PutX(x+i, y, '═', col, BG, true)
+		s.PutX(x+i, y+h-1, '═', col, BG, true)
+	}
+	for j := 1; j < h-1; j++ {
+		s.PutX(x, y+j, '║', col, BG, true)
+		s.PutX(x+w-1, y+j, '║', col, BG, true)
+	}
+	s.PutX(x, y, '╔', col, BG, true)
+	s.PutX(x+w-1, y, '╗', col, BG, true)
+	s.PutX(x, y+h-1, '╚', col, BG, true)
+	s.PutX(x+w-1, y+h-1, '╝', col, BG, true)
 }
 
 type Seg struct {
@@ -390,4 +432,25 @@ func (s *Screen) Flush(w io.Writer) {
 	b = append(b, "\x1b[?2026l"...)
 	w.Write(b)
 	s.buf = b
+}
+
+// fitSegs shortens a label so that it takes at most n cells including its two corner characters.
+// The first `cut` segments may be truncated; later ones are optional and shown whole or not at all.
+func fitSegs(segs []Seg, n, cut int) []Seg {
+	room := n - 2
+	var out []Seg
+	for i, sg := range segs {
+		l := rlen(sg.T)
+		if l <= room {
+			out = append(out, sg)
+			room -= l
+			continue
+		}
+		if i < cut && room > 0 {
+			sg.T = trunc(sg.T, room)
+			out = append(out, sg)
+		}
+		break
+	}
+	return out
 }

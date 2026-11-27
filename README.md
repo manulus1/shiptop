@@ -39,9 +39,14 @@ where your CPU is working.
 
 <p align="center"><img src="docs/notebook.gif" alt="rotating 3D thermal laptop" width="60%"></p>
 
-- **matrix mode** (`m`): digital rain made from your live data. It falls faster the busier the CPU is, each band
-  of columns belongs to one logical processor (a busy core rains harder), and the glyphs are taken from the
-  names of the processes running right now. A small panel shows cpu, ram, gpu, battery watts and the busiest process.
+- **windows**: every open window (what Alt+Tab shows, most recently used first) with the CPU, RAM, GPU and
+  energy of the process behind it; for Store apps that is the app itself, not ApplicationFrameHost.
+  `Enter` or a double click brings the selected window to the front, restoring it if it is minimized.
+- **matrix** (`m` for full screen, or as a panel): digital rain made from your live data. It falls faster the busier
+  the CPU is, each band of columns belongs to one logical processor (a busy core rains harder), and the glyphs
+  are taken from the names of the processes running right now.
+- **your layout** (`l`): move, resize and swap panels, add the windows or matrix panel, take out what you
+  don't need. Drag panels and borders with the mouse or use the keys; the layout is saved and loaded next time.
 
 <p align="center"><img src="docs/matrix.gif" alt="matrix mode: digital rain driven by live CPU load" width="60%"></p>
 
@@ -76,9 +81,38 @@ Just want to look? There is a [browser demo](https://manulus1.github.io/shiptop/
 | `t` | thermal / visible light on the notebook |
 | `z` | zoom the notebook (arrows rotate it) |
 | `m` | matrix mode: digital rain made from live data (`m` / `Esc` back) |
+| `Tab` | switch the arrow keys between the process list and the window list |
+| `Enter` | bring the selected window to the front (window list) |
+| `l` | layout editor (see below) |
 | `q` | quit |
 
+**Mouse** (Windows Terminal, the default terminal on Windows 11, and Linux terminals): click a row to select
+it, double-click a window to bring it to the front, the wheel scrolls lists and turns the notebook.
+Hold `Shift` to select text with the mouse as usual.
+
+**Layout editor** (`l`): changes are only kept when you press `Enter`; `Esc` throws them away.
+
+| mouse / key | action |
+| --- | --- |
+| drag a panel onto another | swap them |
+| drag a panel onto another panel's edge | put it there, splitting that panel |
+| drag a panel onto the screen edge | full-height column or full-width row on that side |
+| drag a border | resize |
+| wheel over a panel · `Space` | show a different panel there |
+| `Tab` | select the next panel |
+| `←` `↑` `↓` `→` or `h` `j` `k` `l` | swap with the neighbour |
+| `Shift`+arrows or `H` `J` `K` `L` | move an edge of the selected panel |
+| `Ctrl`+arrows | move the panel to that screen edge |
+| `a` · `x` | add a panel · remove the selected one |
+| `s` · `=` | side by side ↔ stacked · equal sizes |
+| `r` | back to the built-in layout |
+
+The layout is saved to `%AppData%\shiptop\layout.json` (`~/.config/shiptop/layout.json` on Linux).
+`shiptop --reset-layout` deletes it.
+
 `shiptop --once` prints a single plain-text sample, handy to compare with Task Manager.
+`shiptop --windows` lists the windows the windows panel shows, `shiptop --raise TEXT` brings the first
+window whose title contains `TEXT` to the front.
 
 ## What is real and what is modelled
 
@@ -111,10 +145,16 @@ lsass or svchost, as well as itself.
 
 ## How it works
 
-- Pure Go standard library, about 4,500 lines, no cgo and no third-party modules.
+- Pure Go standard library, about 6,400 lines, no cgo and no third-party modules.
 - Windows data comes from the same sources Task Manager uses: `NtQuerySystemInformation` for processes and
   per-core times, `GetPerformanceInfo`, `GlobalMemoryStatusEx`, `GetDiskFreeSpaceExW`, `GetIfEntry`.
 - The screen is a cell buffer flushed as 24-bit ANSI with diffing, so only changed cells are written.
+- The layout is a binary split tree: each split gives a share of its space to one side, within the panels'
+  minimum sizes. Every panel is drawn inside a clip rectangle, so it can never paint over its neighbours.
+- The window list uses `EnumWindows` with the same filter as Alt+Tab (visible, not cloaked, no tool
+  windows or owned popups). Windows only lets the program you last typed into change the foreground
+  window, and that is the terminal, so to bring a window to the front shiptop briefly attaches to the
+  input of the current foreground window, as task switchers do.
 - The laptop is a tiny software rasterizer: z-buffer, perspective-correct texture lookup, flat lighting,
   a pixel-art outline pass, and a heat field sampled on a 32×22 grid.
 
@@ -130,7 +170,11 @@ Windows APIs are easy to get subtly wrong, so:
   unit-tested against buffers laid out like the real ones, including Unicode names, out-of-bounds pointers
   and truncated data; the Linux battery and thermal readers are tested against fake sysfs trees,
 - CI runs `shiptop --selftest` on a real **Windows** runner and on Linux: it reads every metric and fails if
-  any is missing or implausible.
+  any is missing or implausible. On Windows it also opens Notepad and checks that the window list finds it.
+- the layout code is tested on random layouts and random sequences of moves, swaps, resizes and removals:
+  panels always cover the screen without overlapping and keep their minimum sizes; every panel is drawn at
+  random sizes to check it never paints outside its tile; and the built-in layout is checked to be identical,
+  cell for cell, to the fixed layout of earlier versions at over 1,800 window sizes.
 
 ## Build
 
@@ -144,7 +188,7 @@ go test ./...
 
 - 64-bit network counters and friendly adapter names (`GetIfTable2`)
 - disk read / write rates
-- process tree view, mouse support, saved settings and themes
+- process tree view and themes
 - winget and Scoop packages, signed binaries
 
 Ideas and pull requests are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md).
