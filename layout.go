@@ -42,7 +42,7 @@ func init() {
 		{"mem", "mem", 30, 5, 4, drawMem, false},
 		{"net", "net", 30, 5, 3, drawNet, false},
 		{"proc", "proc", 36, 6, 7, drawProc, true},
-		{"notebook", "notebook", 30, 8, 2, drawNB, false},
+		{"notebook", "notebook", 36, 8, 2, drawNB, false}, // below 36 columns the readouts run into each other
 		{"windows", "windows", 40, 5, 5, drawWindows, true},
 		{"matrix", "matrix", 12, 4, 1, drawMatrixPanel, false},
 	}

@@ -48,6 +48,8 @@ where your CPU is working.
 - **your layout** (`l`): move, resize and swap panels, add the windows or matrix panel, take out what you
   don't need. Drag panels and borders with the mouse or use the keys; the layout is saved and loaded next time.
 
+<p align="center"><img src="docs/layout.gif" alt="layout editor: dragging the net panel to the screen edge, adding the matrix panel, resizing" width="80%"></p>
+
 <p align="center"><img src="docs/matrix.gif" alt="matrix mode: digital rain driven by live CPU load" width="60%"></p>
 
 ## Install
